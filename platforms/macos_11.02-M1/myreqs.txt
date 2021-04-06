@@ -1,0 +1,13 @@
+# requirements.txt created by version.sh
+# Date: Thu Feb 25 22:07:32 CST 2021
+# Host: Galadriel.local [Darwin Galadriel.local 19.6.0 Darwin Kernel Version 19.6.0: Thu Oct 29 22:56:45 PDT 2020; root:xnu-6153.141.2.2~1/RELEASE_X86_64 x86_64]
+# Python: /Users/mike/software/Install/Conda/envs/mirgeDriver.Y1nozzle/bin/python [Python 3.8.8]
+--editable git+https://github.com/inducer/dagrt.git@d463aff#egg=dagrt
+--editable git+https://github.com/inducer/grudge.git@v2021.1-19-g0b65f3f#egg=grudge
+--editable git+https://github.com/inducer/leap.git@d30ba46#egg=leap
+--editable git+https://github.com/inducer/loopy.git@v2020.2.1-271-ge6b44133#egg=loopy
+--editable git+https://github.com/inducer/meshmode.git@v2021.1-48-gdb126f1#egg=meshmode
+--editable git+https://github.com/illinois-ceesd/mirgecom@13b8a13#egg=mirgecom
+--editable git+https://github.com/inducer/modepy.git@f6ed5c0#egg=modepy
+--editable git+https://github.com/inducer/pymbolic.git@v2020.1-78-g66d2667#egg=pymbolic
+--editable git+https://github.com/inducer/pytato.git@dcb531a#egg=pytato
