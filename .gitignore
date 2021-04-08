@@ -1,0 +1,8 @@
+emirge
+*.*vtu*
+*.sqlite*
+*.pkl
+myenv.yml
+myreqs.txt
+runError*
+runOutput*
