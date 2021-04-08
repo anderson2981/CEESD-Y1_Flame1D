@@ -73,7 +73,7 @@ from mirgecom.boundary import (
 from mirgecom.initializers import (
     Lump,
     Uniform,
-    MixtureDiscontinuity,
+    Discontinuity,
     MixtureInitializer
 )
 from mirgecom.eos import PyrometheusMixture
@@ -194,7 +194,7 @@ def main(ctx_factory=cl.create_some_context,
 
     casename = "flame1d"
     pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
-    eos = PyrometheusMixture(pyrometheus_mechanism, tguess=temp_unburned)
+    eos = PyrometheusMixture(pyrometheus_mechanism, temperature_guess=temp_unburned)
     species_names = pyrometheus_mechanism.species_names
 
     print(f"Pyrometheus mechanism species names {species_names}")
@@ -202,7 +202,7 @@ def main(ctx_factory=cl.create_some_context,
     print(f"Burned state (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
     # use the burned conditions with a lower temperature
-    bulk_init = MixtureDiscontinuity(dim=dim, x0=0.05, sigma=0.01, nspecies=nspecies,
+    bulk_init = Discontinuity(dim=dim, x0=0.05, sigma=0.01, nspecies=nspecies,
                               tl=temp_ignition, tr=temp_unburned,
                               pl=pres_burned, pr=pres_unburned,
                               ul=vel_burned, ur=vel_unburned,
