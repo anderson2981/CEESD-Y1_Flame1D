@@ -84,7 +84,7 @@ from logpyle import IntervalTimer
 
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (initialize_logmgr,
-    logmgr_add_many_discretization_quantities, logmgr_add_device_name)
+    logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info)
 logger = logging.getLogger(__name__)
 
 
@@ -174,6 +174,7 @@ def main(ctx_factory=cl.create_some_context,
     # Initial temperature, pressure, and mixutre mole fractions are needed to
     # set up the initial state in Cantera.
     temp_unburned = 300.0
+    temp_ignition = 2000.0
     # Parameters for calculating the amounts of fuel, oxidizer, and inert species
     equiv_ratio = 1.0
     ox_di_ratio = 0.21
@@ -207,7 +208,7 @@ def main(ctx_factory=cl.create_some_context,
 
 
     # now find the conditions for the burned gas
-    cantera_soln.equilibrate('HP')
+    cantera_soln.equilibrate('TP')
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
     pres_burned = cantera_soln.P
 
@@ -220,14 +221,15 @@ def main(ctx_factory=cl.create_some_context,
     print(f"Unburned state (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
     print(f"Burned state (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
+    # use the burned conditions with a lower temperature
     bulk_init = MixtureDiscontinuity(dim=dim, x0=0.05, sigma=0.01, nspecies=nspecies,
-                              tl=temp_burned, tr=temp_unburned,
+                              tl=temp_ignition, tr=temp_unburned,
                               pl=pres_burned, pr=pres_unburned,
                               ul=vel_burned, ur=vel_unburned,
                               yl=y_burned, yr=y_unburned)
 
     inflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_burned, 
-                                     temperature=temp_burned, massfractions= y_burned,
+                                     temperature=temp_ignition, massfractions= y_burned,
                                      velocity=vel_burned)
     outflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_unburned, 
                                      temperature=temp_unburned, massfractions= y_unburned,
@@ -296,7 +298,7 @@ def main(ctx_factory=cl.create_some_context,
     vis_timer = None
 
     if logmgr:
-        logmgr_add_device_name(logmgr, queue)
+        logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_many_discretization_quantities(logmgr, discr, dim,
             extract_vars_for_logging, units_for_logging)
         #logmgr_add_package_versions(logmgr)
