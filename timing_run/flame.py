@@ -47,7 +47,8 @@ from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
-from mirgecom.euler import inviscid_operator, split_conserved
+from mirgecom.euler import euler_operator
+from mirgecom.fluid import split_conserved
 from mirgecom.simutil import (
     inviscid_sim_timestep,
     sim_checkpoint,
@@ -73,7 +74,7 @@ from mirgecom.boundary import (
 from mirgecom.initializers import (
     Lump,
     Uniform,
-    Discontinuity,
+    PlanarDiscontinuity,
     MixtureInitializer
 )
 from mirgecom.eos import PyrometheusMixture
@@ -127,7 +128,7 @@ def main(ctx_factory=cl.create_some_context,
 
     dim = 2
     order = 1
-    exittol = .09
+    exittol = 100000000
     #t_final = 0.001
     current_cfl = 1.0
     current_t = 0
@@ -201,12 +202,15 @@ def main(ctx_factory=cl.create_some_context,
     print(f"Unburned state (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
     print(f"Burned state (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
+    flame_start_loc = 0.05
+    flame_speed = 1000
+
     # use the burned conditions with a lower temperature
-    bulk_init = Discontinuity(dim=dim, x0=0.05, sigma=0.01, nspecies=nspecies,
-                              tl=temp_ignition, tr=temp_unburned,
-                              pl=pres_burned, pr=pres_unburned,
-                              ul=vel_burned, ur=vel_unburned,
-                              yl=y_burned, yr=y_unburned)
+    bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.01, nspecies=nspecies,
+                              temperature_left=temp_ignition, temperature_right=temp_unburned,
+                              pressure_left=pres_burned, pressure_right=pres_unburned,
+                              velocity_left=vel_burned, velocity_right=vel_unburned,
+                              species_mass_left=y_burned, species_mass_right=y_unburned)
 
     inflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_burned, 
                                      temperature=temp_ignition, massfractions= y_burned,
@@ -298,8 +302,8 @@ def main(ctx_factory=cl.create_some_context,
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    visualizer = make_visualizer(discr, discr.order + 3
-                                 if discr.dim == 2 else discr.order)
+    visualizer = make_visualizer(discr, order + 3
+                                 if discr.dim == 2 else order)
     #    initname = initializer.__class__.__name__
     initname = "flame1d"
     eosname = eos.__class__.__name__
@@ -341,7 +345,7 @@ def main(ctx_factory=cl.create_some_context,
             exit()
 
         cv = split_conserved(dim=dim, q=state)
-        return ( inviscid_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
+        return ( euler_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
                  + eos.get_species_source_terms(cv))
 
     def my_checkpoint(step, t, dt, state):
@@ -359,6 +363,16 @@ def main(ctx_factory=cl.create_some_context,
                     "num_parts": nparts,
                     }, f)
 
+        def loc_fn(t):
+            return flame_start_loc+flame_speed*t
+
+        exact_soln =  PlanarDiscontinuity(dim=dim, disc_location=loc_fn, 
+                              sigma=0.0000001, nspecies=nspecies,
+                              temperature_left=temp_ignition, temperature_right=temp_unburned,
+                              pressure_left=pres_burned, pressure_right=pres_unburned,
+                              velocity_left=vel_burned, velocity_right=vel_unburned,
+                              species_mass_left=y_burned, species_mass_right=y_unburned)
+
         cv = split_conserved(dim, state)
         reaction_rates = eos.get_production_rates(cv)
         viz_fields = [("reaction_rates", reaction_rates)]
@@ -368,7 +382,7 @@ def main(ctx_factory=cl.create_some_context,
                               step=step, t=t, dt=dt, nstatus=nstatus,
                               nviz=nviz, exittol=exittol,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True, viz_fields=viz_fields)
+                              overwrite=True, exact_soln=exact_soln, viz_fields=viz_fields)
 
     if rank == 0:
         logging.info("Stepping.")

@@ -16,9 +16,9 @@ cd emirge
 
 if [ -z ${CONDA_PATH+x} ]; then
   echo "CONDA_PATH unset, installing new conda with emirge"
-  ./install.sh --env-name=mirgeDriver.flame1d
+  ./install.sh --git-ssh --env-name=mirgeDriver.flame1d
 else
   echo "Using existing Conda installation, ${CONDA_PATH}"
-  ./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d
+  ./install.sh --git-ssh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d
 fi
 
