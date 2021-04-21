@@ -48,6 +48,7 @@ from grudge.shortcuts import make_visualizer
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.euler import euler_operator
+from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import split_conserved
 from mirgecom.simutil import (
     inviscid_sim_timestep,
@@ -67,9 +68,7 @@ from mirgecom.integrators import (
 )
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
-    PrescribedBoundary,
-    AdiabaticSlipBoundary,
-    DummyBoundary
+    PrescribedViscousBoundary
 )
 from mirgecom.initializers import (
     Lump,
@@ -77,6 +76,7 @@ from mirgecom.initializers import (
     PlanarDiscontinuity,
     MixtureInitializer
 )
+from mirgecom.transport import SimpleTransport
 from mirgecom.eos import PyrometheusMixture
 import cantera
 import pyrometheus as pyro
@@ -103,7 +103,7 @@ def main(ctx_factory=cl.create_some_context,
 
     """logging and profiling"""
     logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
-        mode="wo", mpi_comm=comm)
+        mode="wu", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
@@ -124,11 +124,11 @@ def main(ctx_factory=cl.create_some_context,
     #current_dt = 5.0e-8 # stable with euler
     current_dt = 5.0e-8 # stable with rk4
     #current_dt = 4e-7 # stable with lrsrk144
-    t_final = 2e-7
+    t_final = 2.e-7
 
     dim = 2
     order = 1
-    exittol = 100000000
+    exittol = 1000000000000
     #t_final = 0.001
     current_cfl = 1.0
     current_t = 0
@@ -195,7 +195,13 @@ def main(ctx_factory=cl.create_some_context,
 
     casename = "flame1d"
     pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
-    eos = PyrometheusMixture(pyrometheus_mechanism, temperature_guess=temp_unburned)
+
+    kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
+    mu = 1.e-5
+    species_diffusivity = 1.e-5 * np.ones(nspecies)
+    transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa, species_diffusivity=species_diffusivity)
+
+    eos = PyrometheusMixture(pyrometheus_mechanism, temperature_guess=temp_unburned, transport_model=transport_model)
     species_names = pyrometheus_mechanism.species_names
 
     print(f"Pyrometheus mechanism species names {species_names}")
@@ -219,10 +225,9 @@ def main(ctx_factory=cl.create_some_context,
                                      temperature=temp_unburned, massfractions= y_unburned,
                                      velocity=vel_unburned)
 
-    inflow = PrescribedBoundary(inflow_init)
-    outflow = PrescribedBoundary(outflow_init)
-    wall = AdiabaticSlipBoundary()
-    dummy = DummyBoundary()
+    inflow = PrescribedViscousBoundary(q_func=inflow_init)
+    outflow = PrescribedViscousBoundary(q_func=outflow_init)
+    wall = PrescribedViscousBoundary()  # essentially a "dummy" use the interior solution for the exterior
 
     from grudge import sym
     boundaries = {sym.DTAG_BOUNDARY("Inflow"): inflow,
@@ -345,7 +350,7 @@ def main(ctx_factory=cl.create_some_context,
             exit()
 
         cv = split_conserved(dim=dim, q=state)
-        return ( euler_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
+        return ( ns_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
                  + eos.get_species_source_terms(cv))
 
     def my_checkpoint(step, t, dt, state):

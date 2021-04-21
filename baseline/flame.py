@@ -47,7 +47,9 @@ from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
-from mirgecom.euler import inviscid_operator, split_conserved
+from mirgecom.euler import euler_operator
+from mirgecom.navierstokes import ns_operator
+from mirgecom.fluid import split_conserved
 from mirgecom.simutil import (
     inviscid_sim_timestep,
     sim_checkpoint,
@@ -66,16 +68,15 @@ from mirgecom.integrators import (
 )
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
-    PrescribedBoundary,
-    AdiabaticSlipBoundary,
-    DummyBoundary
+    PrescribedViscousBoundary
 )
 from mirgecom.initializers import (
     Lump,
     Uniform,
-    MixtureDiscontinuity,
+    PlanarDiscontinuity,
     MixtureInitializer
 )
+from mirgecom.transport import SimpleTransport
 from mirgecom.eos import PyrometheusMixture
 import cantera
 import pyrometheus as pyro
@@ -87,26 +88,6 @@ from mirgecom.logging_quantities import (initialize_logmgr,
     logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info)
 logger = logging.getLogger(__name__)
 
-
-#def generate_mesh():
-    #char_len = 0.001
-    #box_ll = (0.0, 0.0)
-    #box_ur = (0.25, 0.01)
-    #num_elements = (int((box_ur[0]-box_ll[0])/char_len),
-                        #int((box_ur[1]-box_ll[1])/char_len))
-#
-    #from meshmode.mesh.generation import generate_regular_rect_mesh
-    #mesh = partial(generate_regular_rect_mesh, a=box_ll, b=box_ur, n=num_elements,
-      #boundary_tag_to_face={
-          #"Inflow":["-x"],
-          #"Outflow":["+x"],
-          #"Wall":["+y","-y"]
-          #}
-      #)
-    ##print("%d elements" % elements)
-#
-    #return mesh
-#
 
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context,
@@ -122,7 +103,7 @@ def main(ctx_factory=cl.create_some_context,
 
     """logging and profiling"""
     logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
-        mode="wo", mpi_comm=comm)
+        mode="wu", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
@@ -138,16 +119,16 @@ def main(ctx_factory=cl.create_some_context,
 
     #nviz = 500
     #nrestart = 500
-    nviz = 10
-    nrestart = 250
+    nviz = 50
+    nrestart = 200
     #current_dt = 5.0e-8 # stable with euler
     current_dt = 5.0e-8 # stable with rk4
     #current_dt = 4e-7 # stable with lrsrk144
-    t_final = 5.e-1
+    t_final = 0.5
 
     dim = 2
     order = 1
-    exittol = .09
+    exittol = 1000000000000
     #t_final = 0.001
     current_cfl = 1.0
     current_t = 0
@@ -214,19 +195,28 @@ def main(ctx_factory=cl.create_some_context,
 
     casename = "flame1d"
     pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
-    eos = PyrometheusMixture(pyrometheus_mechanism, tguess=temp_unburned)
+
+    kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
+    mu = 1.e-5
+    species_diffusivity = 1.e-5 * np.ones(nspecies)
+    transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa, species_diffusivity=species_diffusivity)
+
+    eos = PyrometheusMixture(pyrometheus_mechanism, temperature_guess=temp_unburned, transport_model=transport_model)
     species_names = pyrometheus_mechanism.species_names
 
     print(f"Pyrometheus mechanism species names {species_names}")
     print(f"Unburned state (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
     print(f"Burned state (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
+    flame_start_loc = 0.05
+    flame_speed = 1000
+
     # use the burned conditions with a lower temperature
-    bulk_init = MixtureDiscontinuity(dim=dim, x0=0.05, sigma=0.01, nspecies=nspecies,
-                              tl=temp_ignition, tr=temp_unburned,
-                              pl=pres_burned, pr=pres_unburned,
-                              ul=vel_burned, ur=vel_unburned,
-                              yl=y_burned, yr=y_unburned)
+    bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.01, nspecies=nspecies,
+                              temperature_left=temp_ignition, temperature_right=temp_unburned,
+                              pressure_left=pres_burned, pressure_right=pres_unburned,
+                              velocity_left=vel_burned, velocity_right=vel_unburned,
+                              species_mass_left=y_burned, species_mass_right=y_unburned)
 
     inflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_burned, 
                                      temperature=temp_ignition, massfractions= y_burned,
@@ -235,10 +225,9 @@ def main(ctx_factory=cl.create_some_context,
                                      temperature=temp_unburned, massfractions= y_unburned,
                                      velocity=vel_unburned)
 
-    inflow = PrescribedBoundary(inflow_init)
-    outflow = PrescribedBoundary(outflow_init)
-    wall = AdiabaticSlipBoundary()
-    dummy = DummyBoundary()
+    inflow = PrescribedViscousBoundary(q_func=inflow_init)
+    outflow = PrescribedViscousBoundary(q_func=outflow_init)
+    wall = PrescribedViscousBoundary()  # essentially a "dummy" use the interior solution for the exterior
 
     from grudge import sym
     boundaries = {sym.DTAG_BOUNDARY("Inflow"): inflow,
@@ -318,8 +307,8 @@ def main(ctx_factory=cl.create_some_context,
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    visualizer = make_visualizer(discr, discr.order + 3
-                                 if discr.dim == 2 else discr.order)
+    visualizer = make_visualizer(discr, order + 3
+                                 if discr.dim == 2 else order)
     #    initname = initializer.__class__.__name__
     initname = "flame1d"
     eosname = eos.__class__.__name__
@@ -361,7 +350,7 @@ def main(ctx_factory=cl.create_some_context,
             exit()
 
         cv = split_conserved(dim=dim, q=state)
-        return ( inviscid_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
+        return ( ns_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
                  + eos.get_species_source_terms(cv))
 
     def my_checkpoint(step, t, dt, state):
@@ -379,6 +368,16 @@ def main(ctx_factory=cl.create_some_context,
                     "num_parts": nparts,
                     }, f)
 
+        def loc_fn(t):
+            return flame_start_loc+flame_speed*t
+
+        exact_soln =  PlanarDiscontinuity(dim=dim, disc_location=loc_fn, 
+                              sigma=0.0000001, nspecies=nspecies,
+                              temperature_left=temp_ignition, temperature_right=temp_unburned,
+                              pressure_left=pres_burned, pressure_right=pres_unburned,
+                              velocity_left=vel_burned, velocity_right=vel_unburned,
+                              species_mass_left=y_burned, species_mass_right=y_unburned)
+
         cv = split_conserved(dim, state)
         reaction_rates = eos.get_production_rates(cv)
         viz_fields = [("reaction_rates", reaction_rates)]
@@ -388,7 +387,7 @@ def main(ctx_factory=cl.create_some_context,
                               step=step, t=t, dt=dt, nstatus=nstatus,
                               nviz=nviz, exittol=exittol,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True, viz_fields=viz_fields)
+                              overwrite=True, exact_soln=exact_soln, viz_fields=viz_fields)
 
     if rank == 0:
         logging.info("Stepping.")
