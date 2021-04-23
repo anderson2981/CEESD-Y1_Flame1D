@@ -103,7 +103,7 @@ def main(ctx_factory=cl.create_some_context,
 
     """logging and profiling"""
     logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
-        mode="wu", mpi_comm=comm)
+        mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
@@ -242,7 +242,8 @@ def main(ctx_factory=cl.create_some_context,
                             int((box_ur[1]-box_ll[1])/char_len))
     
         from meshmode.mesh.generation import generate_regular_rect_mesh
-        generate_mesh = partial(generate_regular_rect_mesh, a=box_ll, b=box_ur, n=num_elements,
+        generate_mesh = partial(generate_regular_rect_mesh, a=box_ll, b=box_ur, 
+          n=num_elements, mesh_type="X",
           boundary_tag_to_face={
               "Inflow":["-x"],
               "Outflow":["+x"],
