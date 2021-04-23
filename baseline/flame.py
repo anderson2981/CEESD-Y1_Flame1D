@@ -148,7 +148,10 @@ def main(ctx_factory=cl.create_some_context,
     # --- Note: Users may add their own CTI file by dropping it into
     # ---       mirgecom/mechanisms alongside the other CTI files.
     from mirgecom.mechanisms import get_mechanism_cti
-    mech_cti = get_mechanism_cti("uiuc")
+    # uiuc C2H4
+    #mech_cti = get_mechanism_cti("uiuc")
+    # sanDiego H2
+    mech_cti = get_mechanism_cti("sanDiego")
 
     cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
     nspecies = cantera_soln.n_species
@@ -156,13 +159,19 @@ def main(ctx_factory=cl.create_some_context,
     # Initial temperature, pressure, and mixutre mole fractions are needed to
     # set up the initial state in Cantera.
     temp_unburned = 300.0
-    temp_ignition = 2000.0
+    temp_ignition = 1500.0
     # Parameters for calculating the amounts of fuel, oxidizer, and inert species
     equiv_ratio = 1.0
     ox_di_ratio = 0.21
-    stoich_ratio = 3.0
+    # H2
+    stoich_ratio = 0.5
+    #C2H4
+    #stoich_ratio = 3.0
     # Grab the array indices for the specific species, ethylene, oxygen, and nitrogen
-    i_fu = cantera_soln.species_index("C2H4")
+    # C2H4
+    #i_fu = cantera_soln.species_index("C2H4")
+    # H2
+    i_fu = cantera_soln.species_index("H2")
     i_ox = cantera_soln.species_index("O2")
     i_di = cantera_soln.species_index("N2")
     x = np.zeros(nspecies)
@@ -197,8 +206,13 @@ def main(ctx_factory=cl.create_some_context,
     casename = "flame1d"
     pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
 
-    kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
+    # C2H4
     mu = 1.e-5
+    kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
+    # H2
+    mu = 1.e-5
+    kappa = mu*0.08988/0.75  # Pr = mu*rho/alpha = 0.75
+
     species_diffusivity = 1.e-5 * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa, species_diffusivity=species_diffusivity)
 
@@ -324,10 +338,10 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info(init_message)
 
-    timestepper = rk4_step
+    #timestepper = rk4_step
     #timestepper = lsrk54_step
     #timestepper = lsrk144_step
-    #timestepper = euler_step
+    timestepper = euler_step
 
     get_timestep = partial(inviscid_sim_timestep, discr=discr, t=current_t,
                            dt=current_dt, cfl=current_cfl, eos=eos,
