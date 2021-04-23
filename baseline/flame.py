@@ -85,13 +85,14 @@ from logpyle import IntervalTimer
 
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (initialize_logmgr,
-    logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info)
+    logmgr_add_many_discretization_quantities, logmgr_add_cl_device_info,
+    logmgr_add_device_memory_usage)
 logger = logging.getLogger(__name__)
 
 
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context,
-         snapshot_pattern="y0euler-{step:06d}-{rank:04d}.pkl",
+         snapshot_pattern="flame1d-{step:06d}-{rank:04d}.pkl",
          restart_step=None, use_profiling=False, use_logmgr=False):
     """Drive the Y0 example."""
 
@@ -102,7 +103,7 @@ def main(ctx_factory=cl.create_some_context,
     nparts = comm.Get_size()
 
     """logging and profiling"""
-    logmgr = initialize_logmgr(use_logmgr, filename="y0euler.sqlite",
+    logmgr = initialize_logmgr(use_logmgr, filename="flame1d.sqlite",
         mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
@@ -291,14 +292,13 @@ def main(ctx_factory=cl.create_some_context,
         logmgr_add_cl_device_info(logmgr, queue)
         logmgr_add_many_discretization_quantities(logmgr, discr, dim,
             extract_vars_for_logging, units_for_logging)
-        #logmgr_add_package_versions(logmgr)
-
         logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", "t_log.max",
                             "min_pressure", "max_pressure",
                             "min_temperature", "max_temperature"])
 
         try:
-            logmgr.add_watches(["memory_usage.max"])
+            logmgr.add_watches(["memory_usage_python.max",
+                                "memory_usage_gpu.max"])
         except KeyError:
             pass
 
@@ -308,8 +308,7 @@ def main(ctx_factory=cl.create_some_context,
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    visualizer = make_visualizer(discr, order + 3
-                                 if discr.dim == 2 else order)
+    visualizer = make_visualizer(discr, order)
     #    initname = initializer.__class__.__name__
     initname = "flame1d"
     eosname = eos.__class__.__name__
