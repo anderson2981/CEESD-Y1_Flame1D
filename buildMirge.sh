@@ -22,3 +22,7 @@ else
   ./install.sh --git-ssh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d
 fi
 
+# get parsl for remote execution
+conda deactivate
+conda activate mirgeDriver.flame1d
+conda install parsl
