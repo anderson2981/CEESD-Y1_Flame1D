@@ -220,7 +220,7 @@ def main(ctx_factory=cl.create_some_context,
 
 
 if __name__ == "__main__":
-    freeze_support()
+    #freeze_support()
     main()
 
 # vim: foldmethod=marker

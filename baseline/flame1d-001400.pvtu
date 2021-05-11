@@ -5,11 +5,11 @@
 <PDataArray type="Float64" Name="cv_mass" NumberOfComponents="1"/>
 <PDataArray type="Float64" Name="cv_energy" NumberOfComponents="1"/>
 <PDataArray type="Float64" Name="cv_momentum" NumberOfComponents="3"/>
-<PDataArray type="Float64" Name="cv_species_mass" NumberOfComponents="7"/>
+<PDataArray type="Float64" Name="cv_species_mass" NumberOfComponents="9"/>
 <PDataArray type="Float64" Name="dv_temperature" NumberOfComponents="1"/>
 <PDataArray type="Float64" Name="dv_pressure" NumberOfComponents="1"/>
-<PDataArray type="Float64" Name="exact_soln" NumberOfComponents="11"/>
-<PDataArray type="Float64" Name="reaction_rates" NumberOfComponents="7"/>
+<PDataArray type="Float64" Name="exact_soln" NumberOfComponents="13"/>
+<PDataArray type="Float64" Name="reaction_rates" NumberOfComponents="9"/>
 </PPointData>
 <PPoints>
 <PDataArray type="Float64" Name="points" NumberOfComponents="3"/>

@@ -28,6 +28,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
+import yaml
 import logging
 import numpy as np
 import pyopencl as cl
@@ -89,10 +90,16 @@ logger = logging.getLogger(__name__)
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context, casename="flame1d",
+def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file="",
          snapshot_pattern="flame1d-{step:06d}-{rank:04d}.pkl",
          restart_step=None, restart_name=None, use_logmgr=False):
     """Drive the 1D Flame example."""
+
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    rank = 0
+    rank = comm.Get_rank()
+    nparts = comm.Get_size()
 
     if restart_step is None:
         if rank == 0:
@@ -101,12 +108,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     if restart_name is None:
       restart_name=casename
-
-    from mpi4py import MPI
-    comm = MPI.COMM_WORLD
-    rank = 0
-    rank = comm.Get_rank()
-    nparts = comm.Get_size()
 
     """logging and profiling"""
     logmgr = initialize_logmgr(use_logmgr, filename="flame1d.sqlite",
@@ -126,6 +127,26 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     #current_dt = 4e-7 # stable with lrsrk144
     t_final = 2.5e-7
 
+    #input_data = yaml.load_all(open('user_inputs.yaml', 'r'))
+    if(user_input_file):
+        #input_data = yaml.load_all(open('{user_input_file}'.format(user_input_file=user_input_file), 'r'))
+        input_data = yaml.load_all(open(user_input_file), 'r')
+        #input_data = yaml.load_all(open('run2_params.yaml'), 'r')
+        with open('run2_params.yaml') as f:
+            input_data = yaml.load(f, Loader=yaml.FullLoader)
+            #print(input_data)
+        nviz = int(input_data["nviz"])
+        nrestart = int(input_data["nrestart"])
+        current_dt = float(input_data["current_dt"])
+        t_final = float(input_data["t_final"])
+
+    if(rank == 0):
+        print(f'Simluation control data:')
+        print(f'\tnviz = {nviz}')
+        print(f'\tnrestart = {nrestart}')
+        print(f'\tcurrent_dt = {current_dt}')
+        print(f'\tt_final = {t_final}')
+
     dim = 2
     order = 1
     exittol = 1000000000000
@@ -134,7 +155,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     current_t = 0
     constant_cfl = False
     nstatus = 10000000000
-    rank = 0
     checkpoint_t = current_t
     current_step = 0
     vel_burned = np.zeros(shape=(dim,))
@@ -374,7 +394,6 @@ if __name__ == "__main__":
     import os.path
     #from os import path, split
     
-    freeze_support()
     logging.basicConfig(format="%(message)s", level=logging.INFO)
 
     import argparse
@@ -383,6 +402,9 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--restart_file',  type=ascii,
                         dest='restart_file', nargs='?', action='store',
                         help='simulation restart file')
+    parser.add_argument('-i', '--input_file',  type=ascii,
+                        dest='input_file', nargs='?', action='store',
+                        help='simulation config file')
     parser.add_argument('-c', '--casename',  type=ascii,
                         dest='casename', nargs='?', action='store',
                         help='simulation case name')
@@ -391,8 +413,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # for writing output
+    casename = "flame1d"
+    if(args.casename):
+        print(f"Custom casename {args.casename}")
+        casename = (args.casename).replace("'","")
+    else:
+        print(f"Default casename {casename}")
+
     snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl"
     restart_step=None
+    restart_name=None
     if(args.restart_file):
         print(f"Restarting from file {args.restart_file}")
         file_path, file_name = os.path.split(args.restart_file)
@@ -402,18 +433,16 @@ if __name__ == "__main__":
         print(f"name {restart_name}")
     #print(f"step {restart_step}")
 
-    # for writing output
-    casename = "flame1d"
-    if(args.casename):
-      print(f"Custom casename {args.casename}")
-      casename = (args.casename).replace("'","")
-    else:
-      print(f"Default casename {casename}")
 
+    if(args.input_file):
+        input_file = (args.input_file).replace("'","")
+        print(f"Reading user input from {args.input_file}")
+    else:
+        print("No user input file, using default values")
 
 
     print(f"Running {sys.argv[0]}\n")
-    main(restart_step=restart_step, restart_name=restart_name, 
+    main(restart_step=restart_step, restart_name=restart_name, user_input_file=input_file,
          snapshot_pattern=snapshot_pattern, use_logmgr=args.log, casename=casename)
 
 
