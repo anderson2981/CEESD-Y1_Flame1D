@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file="",
+def run_flame(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file="",
          snapshot_pattern="flame1d-{step:06d}-{rank:04d}.pkl",
          restart_step=None, restart_name=None, use_logmgr=False):
     """Drive the 1D Flame example."""
@@ -442,7 +442,7 @@ if __name__ == "__main__":
 
 
     print(f"Running {sys.argv[0]}\n")
-    main(restart_step=restart_step, restart_name=restart_name, user_input_file=input_file,
+    run_flame(restart_step=restart_step, restart_name=restart_name, user_input_file=input_file,
          snapshot_pattern=snapshot_pattern, use_logmgr=args.log, casename=casename)
 
 

@@ -56,7 +56,7 @@ import cantera
 import pyrometheus as pyro
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context,
+def run_init(ctx_factory=cl.create_some_context,
          snapshot_pattern="flame1d-{step:06d}-{rank:04d}.pkl",
          ):
     """Drive the Y0 example."""
@@ -219,8 +219,7 @@ def main(ctx_factory=cl.create_some_context,
     exit()
 
 
-if __name__ == "__main__":
-    #freeze_support()
-    main()
+if __name__ == '__main__':
+    run_init()
 
 # vim: foldmethod=marker
