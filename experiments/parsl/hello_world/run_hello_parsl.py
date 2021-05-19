@@ -59,7 +59,6 @@ lassen_htex = Config(
                 init_blocks=1,
                 max_blocks=1,
                 worker_init=(
-                             'export OMPI_MCA_mpi_warn_on_fork=0\n'
                              'export XDG_CACHE_HOME="/tmp/$USER/xdg-scratch"\n'
                              'export PYOPENCL_CTX="port:tesla"\n'
                             ),
@@ -79,6 +78,7 @@ quartz_htex = Config(
             address='quartz.llnl.gov',   # assumes Parsl is running on a login node
             worker_port_range=(50000, 55000),
             worker_debug=True,
+            cores_per_worker=2,
             provider=SlurmProvider(
                 launcher=SrunLauncher(),
                 walltime="00:20:00",
@@ -87,9 +87,10 @@ quartz_htex = Config(
                 max_blocks=1,
                 worker_init=(
                              'export XDG_CACHE_HOME="/tmp/$USER/xdg-scratch"\n'
+                             'export OMPI_MCA_mpi_warn_on_fork=0\n'
                              #'export PYOPENCL_CTX="port:pthread"\n'
                              'module load gcc/10.2.1\n'
-                             #'module load openmpi/4.1.0\n'
+                             'module load openmpi/4.1.0\n'
                             ),
                 account='uiuc',
                 #partition='pbatch',
@@ -121,6 +122,7 @@ def load_conda():
             'conda activate mirgeDriver.flame1d\n'
             'which python\n'
             'which mpicc\n'
+            'module list\n'
             'env\n'
             #'export XDG_CACHE_HOME="/tmp/$USER/xdg-scratch"\n'    
             #'export PYOPENCL_CTX="port:tesla"\n'
@@ -138,15 +140,14 @@ def load_conda():
 def run_mirge(execution_string='', stdout='run.stdout', stderr='run.stderr', inputs=[], outputs=[]):
     return(execution_string)
 
-# first run is just an init, on lassen
-init_restart_file = File(os.path.join(os.getcwd(), 'flame1d-000000-0000.pkl'))
-intro_str = 'echo "Running flame1d_init"\n'
+# first run with c
+intro_str = 'echo "C hello-world-mpi"\n'
 conda_str = load_conda()
-execution_str = 'python -u -m mpi4py flame_init.py\n'
+execution_str = './hello-world-mpi\n'
 ex_str = intro_str+conda_str+execution_str
-stdout_str = 'flame1d_init.stdout'
-stderr_str = 'flame1d_init.stderr'
-flame_init = run_mirge(execution_string=ex_str, stdout=stdout_str, stderr=stderr_str, outputs=[init_restart_file])
+stdout_str = 'hello_c.stdout'
+stderr_str = 'hello_c.stderr'
+flame_init = run_mirge(execution_string=ex_str, stdout=stdout_str, stderr=stderr_str)
 
 #print(flame_init.outputs)
 print('Done: {}'.format(flame_init.done()))
@@ -154,41 +155,15 @@ print('Result: {}'.format(flame_init.result()))
 print('Done: {}'.format(flame_init.done()))
 
 # second run is a restart from the init, on lassen
-run_restart_file = File(os.path.join(os.getcwd(), 'flame1d_run-000005-0000.pkl'))
-run_viz_file = File(os.path.join(os.getcwd(), 'flame1d_run-000005.pvtu'))
-input_file = File(os.path.join(os.getcwd(), 'run1_params.yaml'))
-casename='flame1d_run'
-intro_str = 'echo "Running flame1d_run"\n'
-execution_str = ('python -u -m mpi4py flame_run.py -r {restart_file} -c {casename} -i {input_file}\n'.
-                    format(restart_file=init_restart_file, casename=casename, input_file=input_file)
-                )
+# second run with python
+intro_str = 'echo "python hello-world-mpi"\n'
+conda_str = load_conda()
+execution_str = ('python -u -m mpi4py hello-world-mpi.py\n')
 ex_str = intro_str+conda_str+execution_str
-stdout_str = 'flame1d_run1.stdout'
-stderr_str = 'flame1d_run1.stderr'
-flame_run = run_mirge(execution_string=ex_str, stdout=stdout_str, stderr=stderr_str, inputs=[input_file, init_restart_file], outputs=[run_viz_file, run_restart_file])
+stdout_str = 'hello_py.stdout'
+stderr_str = 'hello_py.stderr'
+flame_run = run_mirge(execution_string=ex_str, stdout=stdout_str, stderr=stderr_str)
 
-# I get error messages if I do this, even though it finishes correctly...
-print(flame_run.outputs[0])
 print('Done: {}'.format(flame_run.done()))
-print('Result: {}'.format(flame_run.outputs[0].result()))
+print('Result: {}'.format(flame_run.result()))
 print('Done: {}'.format(flame_run.done()))
-
-## third run is a restart from the result of the second run, but on quartz
-run2_restart_file = File(os.path.join(os.getcwd(), 'flame1d_run-000005-0000.pkl'))
-run2_viz_file = File(os.path.join(os.getcwd(), 'flame1d_run-000005.pvtu'))
-input_file2 = File(os.path.join(os.getcwd(), 'run2_params.yaml'))
-casename='flame1d_run2'
-intro_str = 'echo "Running flame1d_run2"\n'
-execution_str = ('python -u -m mpi4py flame_run.py -r {restart_file} -c {casename} -i {input_file}\n'.
-                    format(restart_file=run_restart_file, casename=casename, input_file=input_file2)
-                )
-ex_str = intro_str+conda_str+execution_str
-stdout_str = 'flame1d_run2.stdout'
-stderr_str = 'flame1d_run2.stderr'
-flame_run2 = run_mirge(execution_string=ex_str, stdout=stdout_str, stderr=stderr_str, inputs=[input_file2, run_restart_file], outputs=[run2_viz_file, run2_restart_file])
-
-# I get error messages if I do this, even though it finishes correctly...
-print(flame_run.outputs[0])
-print('Done: {}'.format(flame_run2.done()))
-print('Result: {}'.format(flame_run2.outputs[0].result()))
-print('Done: {}'.format(flame_run2.done()))
