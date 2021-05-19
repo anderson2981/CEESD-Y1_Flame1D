@@ -1,0 +1,4 @@
+nviz: 5
+nrestart: 5
+current_dt: 5e-8
+t_final: 2.5e-7
