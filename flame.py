@@ -28,6 +28,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
+import os
+import yaml
 import logging
 import numpy as np
 import pyopencl as cl
@@ -42,6 +44,7 @@ import pickle
 from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.dof_array import thaw, flatten, unflatten
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
@@ -50,6 +53,10 @@ from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.euler import euler_operator
 from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import split_conserved
+from mirgecom.artificial_viscosity import (
+    av_operator,
+    smoothness_indicator
+)
 from mirgecom.simutil import (
     inviscid_sim_timestep,
     sim_checkpoint,
