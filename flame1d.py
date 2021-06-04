@@ -53,10 +53,6 @@ from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.euler import euler_operator
 from mirgecom.navierstokes import ns_operator
 from mirgecom.fluid import split_conserved
-from mirgecom.artificial_viscosity import (
-    av_operator,
-    smoothness_indicator
-)
 from mirgecom.simutil import (
     inviscid_sim_timestep,
     sim_checkpoint,
@@ -138,11 +134,9 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     current_dt = 5e-9
     t_final = 1e-7
     order = 1
-    alpha_sc = 0.5
-    s0_sc = -5.0
-    kappa_sc = 0.5
 
-    if user_input_file:
+    if(user_input_file):
+        #with open('run2_params.yaml') as f:
         if rank ==0:
             with open(user_input_file) as f:
                 input_data = yaml.load(f, Loader=yaml.FullLoader)
@@ -150,21 +144,46 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
             input_data=None
         input_data = comm.bcast(input_data, root=0)
             #print(input_data)
-        nviz = int(input_data["nviz"])
-        nrestart = int(input_data["nrestart"])
-        current_dt = float(input_data["current_dt"])
-        t_final = float(input_data["t_final"])
-        order = int(input_data["order"])
+        try:
+            nviz = int(input_data["nviz"])
+        except KeyError:
+            pass
+        try:
+            nrestart = int(input_data["nrestart"])
+        except KeyError:
+            pass
+        try:
+            current_dt = float(input_data["current_dt"])
+        except KeyError:
+            pass
+        try:
+            t_final = float(input_data["t_final"])
+        except KeyError:
+            pass
+        try:
+            order = int(input_data["order"])
+        except KeyError:
+            pass
+        try:
+            integrator = input_data["integrator"]
+        except KeyError:
+            pass
+        
+    # param sanity check
+    allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
+    if(integrator not in allowed_integrators):
+        error_message = "Invalid time integrator: {}".format(integrator)
+        raise RuntimeError(error_message)
 
     if(rank == 0):
-        print(f'Simluation control data:')
+        print(f'#### Simluation control data: ####')
         print(f'\tnviz = {nviz}')
         print(f'\tnrestart = {nrestart}')
         print(f'\tcurrent_dt = {current_dt}')
         print(f'\tt_final = {t_final}')
         print(f'\torder = {order}')
-        print(f"Shock capturing parameters: alpha {alpha_sc}, s0 {s0_sc}, kappa {kappa_sc}")
-
+        print(f"\tTime integration {integrator}")
+        print(f'#### Simluation control data: ####')
 
     dim = 2
     current_cfl = 1.0
@@ -358,10 +377,13 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     if rank == 0:
         logger.info(init_message)
 
-    timestepper = rk4_step
-    #timestepper = lsrk54_step
-    #timestepper = lsrk144_step
-    #timestepper = euler_step
+    timestepper=rk4_step
+    if integrator == "euler":
+        timestepper = euler_step
+    if integrator == "lsrk54":
+        timestepper = lsrk54_step
+    if integrator == "lsrk144":
+        timestepper = lsrk144_step
 
     get_timestep = partial(inviscid_sim_timestep, discr=discr, t=current_t,
                            dt=current_dt, cfl=current_cfl, eos=eos,
