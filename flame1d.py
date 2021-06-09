@@ -101,7 +101,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
-    rank = 0
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
@@ -134,6 +133,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     current_dt = 5e-9
     t_final = 1e-7
     order = 1
+    integrator="rk4"
 
     if(user_input_file):
         #with open('run2_params.yaml') as f:
