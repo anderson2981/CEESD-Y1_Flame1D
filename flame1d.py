@@ -28,6 +28,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
+import os
+import yaml
 import logging
 import numpy as np
 import pyopencl as cl
@@ -42,6 +44,7 @@ import pickle
 from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.dof_array import thaw, flatten, unflatten
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
@@ -90,23 +93,27 @@ logger = logging.getLogger(__name__)
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context,
-         snapshot_pattern="flame1d-{step:06d}-{rank:04d}.pkl",
-         restart_step=None, use_profiling=False, use_logmgr=False):
-    """Drive the Y0 example."""
+def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file="",
+         snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl", 
+         restart_step=None, restart_name=None,
+         use_profiling=False, use_logmgr=False, use_lazy_eval=False):
+    """Drive the 1D Flame example."""
 
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
-    rank = 0
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
-    """logging and profiling"""
-    logmgr = initialize_logmgr(use_logmgr, filename="flame1d.sqlite",
+    if restart_name is None:
+      restart_name=casename
+
+    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
         mode="wo", mpi_comm=comm)
 
     cl_ctx = ctx_factory()
     if use_profiling:
+        if use_lazy_eval:
+            raise RuntimeError("Cannot run lazy with profiling.")
         queue = cl.CommandQueue(cl_ctx,
             properties=cl.command_queue_properties.PROFILING_ENABLE)
         actx = PyOpenCLProfilingArrayContext(queue,
@@ -114,27 +121,75 @@ def main(ctx_factory=cl.create_some_context,
             logmgr=logmgr)
     else:
         queue = cl.CommandQueue(cl_ctx)
-        actx = PyOpenCLArrayContext(queue,
-            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+        if use_lazy_eval:
+            actx = PytatoArrayContext(queue)
+        else:
+            actx = PyOpenCLArrayContext(queue,
+                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
 
-    #nviz = 500
-    #nrestart = 500
-    nviz = 20
-    nrestart = 20
-    #current_dt = 5.0e-8 # stable with euler
-    current_dt = 5.0e-8 # stable with rk4
-    #current_dt = 4e-7 # stable with lrsrk144
-    t_final = 2.e-7
+    # default input values that will be (potentially) read from input
+    nviz = 100
+    nrestart = 100
+    current_dt = 5e-9
+    t_final = 1e-7
+    order = 1
+    integrator="rk4"
+
+    if(user_input_file):
+        #with open('run2_params.yaml') as f:
+        if rank ==0:
+            with open(user_input_file) as f:
+                input_data = yaml.load(f, Loader=yaml.FullLoader)
+        else:
+            input_data=None
+        input_data = comm.bcast(input_data, root=0)
+            #print(input_data)
+        try:
+            nviz = int(input_data["nviz"])
+        except KeyError:
+            pass
+        try:
+            nrestart = int(input_data["nrestart"])
+        except KeyError:
+            pass
+        try:
+            current_dt = float(input_data["current_dt"])
+        except KeyError:
+            pass
+        try:
+            t_final = float(input_data["t_final"])
+        except KeyError:
+            pass
+        try:
+            order = int(input_data["order"])
+        except KeyError:
+            pass
+        try:
+            integrator = input_data["integrator"]
+        except KeyError:
+            pass
+        
+    # param sanity check
+    allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
+    if(integrator not in allowed_integrators):
+        error_message = "Invalid time integrator: {}".format(integrator)
+        raise RuntimeError(error_message)
+
+    if(rank == 0):
+        print(f'#### Simluation control data: ####')
+        print(f'\tnviz = {nviz}')
+        print(f'\tnrestart = {nrestart}')
+        print(f'\tcurrent_dt = {current_dt}')
+        print(f'\tt_final = {t_final}')
+        print(f'\torder = {order}')
+        print(f"\tTime integration {integrator}")
+        print(f'#### Simluation control data: ####')
 
     dim = 2
-    order = 1
-    exittol = 1000000000000
-    #t_final = 0.001
     current_cfl = 1.0
     current_t = 0
     constant_cfl = False
     nstatus = 10000000000
-    rank = 0
     checkpoint_t = current_t
     current_step = 0
     vel_burned = np.zeros(shape=(dim,))
@@ -193,7 +248,6 @@ def main(ctx_factory=cl.create_some_context,
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
     pres_burned = cantera_soln.P
 
-    casename = "flame1d"
     pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
 
     kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
@@ -229,10 +283,9 @@ def main(ctx_factory=cl.create_some_context,
     outflow = PrescribedViscousBoundary(q_func=outflow_init)
     wall = PrescribedViscousBoundary()  # essentially a "dummy" use the interior solution for the exterior
 
-    from grudge import sym
-    boundaries = {sym.DTAG_BOUNDARY("Inflow"): inflow,
-                  sym.DTAG_BOUNDARY("Outflow"): outflow,
-                  sym.DTAG_BOUNDARY("Wall"): wall}
+    boundaries = {DTAG_BOUNDARY("Inflow"): inflow,
+                  DTAG_BOUNDARY("Outflow"): outflow,
+                  DTAG_BOUNDARY("Wall"): wall}
 
     if restart_step is None:
         char_len = 0.001
@@ -253,7 +306,7 @@ def main(ctx_factory=cl.create_some_context,
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-        with open(snapshot_pattern.format(step=restart_step, rank=rank), "rb") as f:
+        with open(snapshot_pattern.format(step=restart_step, rank=rank, casename=casename), "rb") as f:
             restart_data = pickle.load(f)
 
         local_mesh = restart_data["local_mesh"]
@@ -273,7 +326,7 @@ def main(ctx_factory=cl.create_some_context,
         if rank == 0:
             logging.info("Initializing soln.")
         # for Discontinuity initial conditions
-        current_state = bulk_init(t=0., x_vec=nodes, eos=eos)
+        current_state = bulk_init(x_vec=nodes, eos=eos)
         # for uniform background initial condition
         #current_state = bulk_init(nodes, eos=eos)
     else:
@@ -324,10 +377,13 @@ def main(ctx_factory=cl.create_some_context,
     if rank == 0:
         logger.info(init_message)
 
-    timestepper = rk4_step
-    #timestepper = lsrk54_step
-    #timestepper = lsrk144_step
-    #timestepper = euler_step
+    timestepper=rk4_step
+    if integrator == "euler":
+        timestepper = euler_step
+    if integrator == "lsrk54":
+        timestepper = lsrk54_step
+    if integrator == "lsrk144":
+        timestepper = lsrk144_step
 
     get_timestep = partial(inviscid_sim_timestep, discr=discr, t=current_t,
                            dt=current_dt, cfl=current_cfl, eos=eos,
@@ -337,6 +393,7 @@ def main(ctx_factory=cl.create_some_context,
     def my_rhs(t, state):
         # check for some troublesome output types
         inf_exists = not np.isfinite(discr.norm(state, np.inf))
+        inf_exists = comm.allreduce(inf_exists, MPI.LOR)
         if inf_exists:
             if rank == 0:
                 logging.info("Non-finite values detected in simulation, exiting...")
@@ -344,7 +401,7 @@ def main(ctx_factory=cl.create_some_context,
             sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
                               q=state, vizname=casename,
                               step=999999999, t=t, dt=current_dt,
-                              nviz=1, exittol=exittol,
+                              nviz=1,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
                               overwrite=True,s0=s0_sc,kappa=kappa_sc)
             exit()
@@ -358,9 +415,10 @@ def main(ctx_factory=cl.create_some_context,
         write_restart = (check_step(step, nrestart)
                          if step != restart_step else False)
         if write_restart is True:
-            with open(snapshot_pattern.format(step=step, rank=rank), "wb") as f:
+            with open(snapshot_pattern.format(step=step, rank=rank, casename=casename), "wb") as f:
                 pickle.dump({
                     "local_mesh": local_mesh,
+                    "order": order,
                     "state": obj_array_vectorize(actx.to_numpy, flatten(state)),
                     "t": t,
                     "step": step,
@@ -371,13 +429,6 @@ def main(ctx_factory=cl.create_some_context,
         def loc_fn(t):
             return flame_start_loc+flame_speed*t
 
-        exact_soln =  PlanarDiscontinuity(dim=dim, disc_location=loc_fn, 
-                              sigma=0.0000001, nspecies=nspecies,
-                              temperature_left=temp_ignition, temperature_right=temp_unburned,
-                              pressure_left=pres_burned, pressure_right=pres_unburned,
-                              velocity_left=vel_burned, velocity_right=vel_unburned,
-                              species_mass_left=y_burned, species_mass_right=y_unburned)
-
         cv = split_conserved(dim, state)
         reaction_rates = eos.get_production_rates(cv)
         viz_fields = [("reaction_rates", reaction_rates)]
@@ -385,9 +436,9 @@ def main(ctx_factory=cl.create_some_context,
         return sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
                               q=state, vizname=casename,
                               step=step, t=t, dt=dt, nstatus=nstatus,
-                              nviz=nviz, exittol=exittol,
+                              nviz=nviz,
                               constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True, exact_soln=exact_soln, viz_fields=viz_fields)
+                              overwrite=True, viz_fields=viz_fields)
 
     if rank == 0:
         logging.info("Stepping.")
@@ -422,19 +473,55 @@ if __name__ == "__main__":
     
     logging.basicConfig(format="%(message)s", level=logging.INFO)
 
-    use_logging = True
-    use_profiling = False
+    import argparse
+    parser = argparse.ArgumentParser(description="MIRGE-Com 1D Flame Driver")
+    parser.add_argument('-r', '--restart_file',  type=ascii, 
+                        dest='restart_file', nargs='?', action='store', 
+                        help='simulation restart file')
+    parser.add_argument('-i', '--input_file',  type=ascii,
+                        dest='input_file', nargs='?', action='store',
+                        help='simulation config file')
+    parser.add_argument('-c', '--casename',  type=ascii,
+                        dest='casename', nargs='?', action='store',
+                        help='simulation case name')
+    parser.add_argument("--profile", action="store_true", default=False,
+        help="enable kernel profiling [OFF]")
+    parser.add_argument("--log", action="store_true", default=True,
+        help="enable logging profiling [ON]")
+    parser.add_argument("--lazy", action="store_true", default=False,
+        help="enable lazy evaluation [OFF]")
 
-    # crude command line interface
-    # get the restart interval from the command line
-    print(f"Running {sys.argv[0]}\n")
-    nargs = len(sys.argv)
-    if nargs > 1:
-        restart_step = int(sys.argv[1])
-        print(f"Restarting from step {restart_step}")
-        main(restart_step=restart_step,use_profiling=use_profiling,use_logmgr=use_logging)
+    args = parser.parse_args()
+
+    # for writing output
+    casename = "flame1d"
+    if(args.casename):
+        print(f"Custom casename {args.casename}")
+        casename = (args.casename).replace("'","")
     else:
-        print(f"Starting from step 0")
-        main(use_profiling=use_profiling,use_logmgr=use_logging)
+        print(f"Default casename {casename}")
+
+    snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl"
+    restart_step=None
+    restart_name=None
+    if(args.restart_file):
+        print(f"Restarting from file {args.restart_file}")
+        file_path, file_name = os.path.split(args.restart_file)
+        restart_step = int(file_name.split('-')[1])
+        restart_name = (file_name.split('-')[0]).replace("'","")
+        print(f"step {restart_step}")
+        print(f"name {restart_name}") 
+
+    if(args.input_file):
+        input_file = (args.input_file).replace("'","")
+        print(f"Reading user input from {args.input_file}")
+    else:
+        print("No user input file, using default values")
+        input_file = ""
+
+    print(f"Running {sys.argv[0]}\n")
+    main(restart_step=restart_step, restart_name=restart_name, user_input_file=input_file,
+         snapshot_pattern=snapshot_pattern,
+         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)
 
 # vim: foldmethod=marker
