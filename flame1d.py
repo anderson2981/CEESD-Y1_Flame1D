@@ -342,9 +342,16 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
             extract_vars_for_logging, units_for_logging)
         #logmgr_add_package_versions(logmgr)
 
-        logmgr.add_watches(["step.max", "t_sim.max", "t_step.max", "t_log.max",
-                            "min_pressure", "max_pressure",
-                            "min_temperature", "max_temperature"])
+        logmgr.add_watches([
+                            ("step.max", "step = {value}, "), 
+                            ("t_sim.max", "sim time: {value:1.6e} s,\n"), 
+                            ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
+                            ("max_pressure",    "{value:1.9e})\n"),
+                            ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
+                            ("max_temperature",    "{value:7g})\n"),
+                            ("t_step.max", "------- step walltime: {value:6g} s, "),
+                            ("t_log.max", "log walltime: {value:6g} s")
+                           ])
 
         try:
             logmgr.add_watches(["memory_usage.max"])
@@ -398,7 +405,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
             check_range_local
         )
         errors = False
-        if check_step(step, nhealth):
+        if check_step(step, nhealth) and step > 0:
             if check_range_local(discr, "vol", eos.pressure(state), min_value=101000,
                                  max_value=110000):
                 logger.info("Failed solution health check.")
@@ -421,6 +428,9 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                           ("reaction_rates", eos.get_production_rates(state))]
             write_visfile(discr, viz_fields, visualizer, vizname=casename,
                           step=step, t=t, overwrite=True, vis_timer=vis_timer)
+        if errors:
+            import sys
+            sys.exit()
 
     if rank == 0:
         logging.info("Stepping.")
