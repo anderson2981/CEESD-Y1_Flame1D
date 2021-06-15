@@ -52,7 +52,6 @@ from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.euler import euler_operator
 from mirgecom.navierstokes import ns_operator
-from mirgecom.fluid import split_conserved
 from mirgecom.simutil import (
     inviscid_sim_timestep,
     sim_checkpoint,
@@ -93,7 +92,7 @@ logger = logging.getLogger(__name__)
 
 
 @mpi_entry_point
-def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file="",
+def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file=None,
          snapshot_pattern="{casename}-{step:06d}-{rank:04d}.pkl", 
          restart_step=None, restart_name=None,
          use_profiling=False, use_logmgr=False, use_lazy_eval=False):
@@ -135,7 +134,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     order = 1
     integrator="rk4"
 
-    if(user_input_file):
+    if user_input_file:
         #with open('run2_params.yaml') as f:
         if rank ==0:
             with open(user_input_file) as f:
@@ -392,52 +391,52 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     
     def my_rhs(t, state):
         # check for some troublesome output types
-        inf_exists = not np.isfinite(discr.norm(state, np.inf))
-        inf_exists = comm.allreduce(inf_exists, MPI.LOR)
-        if inf_exists:
-            if rank == 0:
-                logging.info("Non-finite values detected in simulation, exiting...")
-            # dump right now
-            sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              q=state, vizname=casename,
-                              step=999999999, t=t, dt=current_dt,
-                              nviz=1,
-                              constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-                              overwrite=True,s0=s0_sc,kappa=kappa_sc)
-            exit()
-
-        cv = split_conserved(dim=dim, q=state)
-        return ( ns_operator(discr, q=state, t=t, boundaries=boundaries, eos=eos)
-                 + eos.get_species_source_terms(cv))
+        # inf_exists = not np.isfinite(discr.norm(state, np.inf))
+        # inf_exists = comm.allreduce(inf_exists, MPI.LOR)
+        # if inf_exists:
+        #    if rank == 0:
+        #         logging.info("Non-finite values detected in simulation, exiting...")
+        #     # dump right now
+        #     sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
+        #                       q=state, vizname=casename,
+        #                        step=999999999, t=t, dt=current_dt,
+        #                       nviz=1,
+        #                       constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
+        #                       overwrite=True,s0=s0_sc,kappa=kappa_sc)
+        #     exit()
+        # 
+        # cv = split_conserved(dim=dim, q=state)
+        return ( ns_operator(discr, cv=state, t=t, boundaries=boundaries, eos=eos)
+                 + eos.get_species_source_terms(state))
 
     def my_checkpoint(step, t, dt, state):
 
         write_restart = (check_step(step, nrestart)
                          if step != restart_step else False)
         if write_restart is True:
-            with open(snapshot_pattern.format(step=step, rank=rank, casename=casename), "wb") as f:
+            filename = snapshot_pattern.format(step=step, rank=rank, casename=casename)
+            with open(filename, "wb") as f:
                 pickle.dump({
                     "local_mesh": local_mesh,
                     "order": order,
-                    "state": obj_array_vectorize(actx.to_numpy, flatten(state)),
+                    "state": obj_array_vectorize(actx.to_numpy, flatten(state.join())),
                     "t": t,
                     "step": step,
                     "global_nelements": global_nelements,
                     "num_parts": nparts,
                     }, f)
 
-        def loc_fn(t):
-            return flame_start_loc+flame_speed*t
+        write_vizfile = check_step(step, nviz) and not step==restart_step
 
-        cv = split_conserved(dim, state)
-        reaction_rates = eos.get_production_rates(cv)
-        viz_fields = [("reaction_rates", reaction_rates)]
+        viz_fields = None
+        if write_vizfile:
+            reaction_rates = eos.get_production_rates(state)
+            viz_fields = [("reaction_rates", reaction_rates)]
         
         return sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              q=state, vizname=casename,
-                              step=step, t=t, dt=dt, nstatus=nstatus,
-                              nviz=nviz,
-                              constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
+                              cv=state, vizname=casename, step=step, t=t, dt=dt,
+                              nstatus=nstatus, nviz=nviz, constant_cfl=constant_cfl,
+                              comm=comm, vis_timer=vis_timer,
                               overwrite=True, viz_fields=viz_fields)
 
     if rank == 0:
@@ -512,12 +511,12 @@ if __name__ == "__main__":
         print(f"step {restart_step}")
         print(f"name {restart_name}") 
 
+    input_file = None
     if(args.input_file):
         input_file = (args.input_file).replace("'","")
         print(f"Reading user input from {args.input_file}")
     else:
         print("No user input file, using default values")
-        input_file = ""
 
     print(f"Running {sys.argv[0]}\n")
     main(restart_step=restart_step, restart_name=restart_name, user_input_file=input_file,
