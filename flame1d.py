@@ -38,9 +38,6 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 import math
 
-from pytools.obj_array import obj_array_vectorize
-import pickle
-
 from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.dof_array import thaw, flatten, unflatten
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
@@ -129,6 +126,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     # default input values that will be (potentially) read from input
     nviz = 100
     nrestart = 100
+    nhealth = 100
     current_dt = 5e-9
     t_final = 1e-7
     order = 1
@@ -390,54 +388,39 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
 
     
     def my_rhs(t, state):
-        # check for some troublesome output types
-        # inf_exists = not np.isfinite(discr.norm(state, np.inf))
-        # inf_exists = comm.allreduce(inf_exists, MPI.LOR)
-        # if inf_exists:
-        #    if rank == 0:
-        #         logging.info("Non-finite values detected in simulation, exiting...")
-        #     # dump right now
-        #     sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-        #                       q=state, vizname=casename,
-        #                        step=999999999, t=t, dt=current_dt,
-        #                       nviz=1,
-        #                       constant_cfl=constant_cfl, comm=comm, vis_timer=vis_timer,
-        #                       overwrite=True,s0=s0_sc,kappa=kappa_sc)
-        #     exit()
-        # 
-        # cv = split_conserved(dim=dim, q=state)
         return ( ns_operator(discr, cv=state, t=t, boundaries=boundaries, eos=eos)
                  + eos.get_species_source_terms(state))
 
     def my_checkpoint(step, t, dt, state):
+        from mirgecom.simutil import (
+            write_restart_file,
+            write_visfile,
+            check_range_local
+        )
+        errors = False
+        if check_step(step, nhealth):
+            if check_range_local(discr, "vol", eos.pressure(state), min_value=101000,
+                                 max_value=110000):
+                logger.info("Failed solution health check.")
+            errors = True
+        errors = comm.allreduce(errors, MPI.LOR)
 
-        write_restart = (check_step(step, nrestart)
-                         if step != restart_step else False)
-        if write_restart is True:
+        if check_step(step, nrestart) and step != restart_step:
             filename = snapshot_pattern.format(step=step, rank=rank, casename=casename)
-            with open(filename, "wb") as f:
-                pickle.dump({
-                    "local_mesh": local_mesh,
-                    "order": order,
-                    "state": obj_array_vectorize(actx.to_numpy, flatten(state.join())),
-                    "t": t,
-                    "step": step,
-                    "global_nelements": global_nelements,
-                    "num_parts": nparts,
-                    }, f)
+            restart_dictionary = {
+                "local_mesh": local_mesh,
+                "order": order,
+                "state": state,
+                "t": t,
+                "step": step,
+            }
+            write_restart_file(actx, restart_dictionary, filename)
 
-        write_vizfile = check_step(step, nviz) and not step==restart_step
-
-        viz_fields = None
-        if write_vizfile:
-            reaction_rates = eos.get_production_rates(state)
-            viz_fields = [("reaction_rates", reaction_rates)]
-        
-        return sim_checkpoint(discr=discr, visualizer=visualizer, eos=eos,
-                              cv=state, vizname=casename, step=step, t=t, dt=dt,
-                              nstatus=nstatus, nviz=nviz, constant_cfl=constant_cfl,
-                              comm=comm, vis_timer=vis_timer,
-                              overwrite=True, viz_fields=viz_fields)
+        if ((check_step(step, nviz) and step != restart_step) or errors):
+            viz_fields = [("cv", state), ("dv", eos.dependent_vars(state)),
+                          ("reaction_rates", eos.get_production_rates(state))]
+            write_visfile(discr, viz_fields, visualizer, vizname=casename,
+                          step=step, t=t, overwrite=True, vis_timer=vis_timer)
 
     if rank == 0:
         logging.info("Stepping.")
