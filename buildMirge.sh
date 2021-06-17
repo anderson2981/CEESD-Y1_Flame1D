@@ -16,10 +16,10 @@ cd emirge
 
 if [ -z ${CONDA_PATH+x} ]; then
   echo "CONDA_PATH unset, installing new conda with emirge"
-  ./install.sh --git-ssh --env-name=mirgeDriver.flame1d
+  ./install.sh --git-ssh --env-name=mirgeDriver.flame1d --git-ssh --branch=y1-production
 else
   echo "Using existing Conda installation, ${CONDA_PATH}"
-  ./install.sh --git-ssh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d
+  ./install.sh --git-ssh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d --git-ssh --branch=y1-production
 fi
 
 # get parsl for remote execution
