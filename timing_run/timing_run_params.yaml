@@ -1,0 +1,8 @@
+nviz: 100
+nrestart: 100
+nhealth: 100
+nstatus: 1
+current_dt: 5e-9
+t_final: 1.e-7
+order:  1
+integrator: rk4
