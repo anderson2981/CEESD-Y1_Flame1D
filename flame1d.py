@@ -469,6 +469,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                 "state": state,
                 "t": t,
                 "step": step,
+                "global_nelements": global_nelements,
+                "num_parts": nparts
             }
             write_restart_file(actx, restart_dictionary, filename, comm)
 
