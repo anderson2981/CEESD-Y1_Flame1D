@@ -58,11 +58,13 @@ from mirgecom.simutil import (
     inviscid_sim_timestep,
     check_step,
     generate_and_distribute_mesh,
-    write_restart_file,
     write_visfile,
     check_range_local,
     check_naninf_local,
     check_range_local
+)
+from mirgecom.restart import (
+    write_restart_file
 )
 from mirgecom.io import make_init_message
 from mirgecom.mpi import mpi_entry_point
@@ -134,27 +136,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         else:
             actx = PyOpenCLArrayContext(queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
-
-    ##nviz = 500
-    ##nrestart = 500
-    #nviz = 20
-    #nrestart = 20
-    ##current_dt = 5.0e-8 # stable with euler
-    #current_dt = 5.0e-8 # stable with rk4
-    ##current_dt = 4e-7 # stable with lrsrk144
-    #t_final = 2.e-7
-#
-    #dim = 2
-    #order = 1
-    #exittol = 1000000000000
-    ##t_final = 0.001
-    #current_cfl = 1.0
-    #current_t = 0
-    #constant_cfl = False
-    #nstatus = 10000000000
-    #rank = 0
-    #checkpoint_t = current_t
-    #current_step = 0
 
     # default input values that will be read from input (if they exist)
     nviz = 100
@@ -232,6 +213,14 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         print(f'\torder = {order}')
         print(f"\tTime integration {integrator}")
         print(f'#### Simluation control data: ####')
+
+    restart_path='restart_data/'
+    viz_path='viz_data/'
+    #if(rank == 0):
+        #if not os.path.exists(restart_path):
+            #os.makedirs(restart_path)
+        #if not os.path.exists(viz_path):
+            #os.makedirs(viz_path)
 
     dim = 2
     exittol = .09
@@ -355,8 +344,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         local_nelements = local_mesh.nelements
 
     else:  # Restart
-        from mirgecom.simutil import read_restart_data
-        restart_file = 'restart_data/'+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
+        from mirgecom.restart import read_restart_data
+        restart_file = restart_path+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
         restart_data = read_restart_data(restart_file)
 
         local_mesh = restart_data["local_mesh"]
@@ -380,9 +369,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     else:
         current_t = restart_data["t"]
         current_step = restart_step
-
-        from mirgecom.simutil import make_fluid_restart_state
-        current_state = make_fluid_restart_state(actx, discr.discr_from_dd("vol"), restart_data["state"])
+        #current_state = make_fluid_restart_state(actx, discr.discr_from_dd("vol"), restart_data["state"])
+        current_state = restart_data["state"]
 
     vis_timer = None
     log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
@@ -445,13 +433,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
             eos.get_species_source_terms(cv=state)
         )
 
-    restart_path='restart_data/'
-    viz_path='viz_data/'
-    if(rank == 0):
-        if not os.path.exists(restart_path):
-            os.makedirs(restart_path)
-        if not os.path.exists(viz_path):
-            os.makedirs(viz_path)
 
     def my_checkpoint(step, t, dt, state, force=False):
         do_health = force or check_step(step, nhealth) and step > 0
@@ -481,7 +462,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
 
         #if check_step(step, nrestart) and step != restart_step and not errors:
         if do_restart or errors:
-            filename = snapshot_pattern.format(step=step, rank=rank, casename=casename)
+            filename = restart_path+snapshot_pattern.format(step=step, rank=rank, casename=casename)
             restart_dictionary = {
                 "local_mesh": local_mesh,
                 "order": order,
@@ -489,7 +470,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                 "t": t,
                 "step": step,
             }
-            write_restart_file(actx, restart_dictionary, filename)
+            write_restart_file(actx, restart_dictionary, filename, comm)
 
         if do_status or do_viz or errors:
             local_cfl = get_inviscid_cfl(discr, eos=eos, dt=dt, cv=state)
@@ -518,7 +499,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                 ("cfl", local_cfl)
             ]
 
-            write_visfile(discr, viz_fields, visualizer, vizname=casename,
+            write_visfile(discr, viz_fields, visualizer, vizname=viz_path+casename,
                           step=step, t=t, overwrite=True, vis_timer=vis_timer)
 
         if errors:
@@ -534,12 +515,11 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                       t_final=t_final, t=current_t, istep=current_step,
                       logmgr=logmgr,eos=eos,dim=dim)
 
-    if not check_step(current_step, nviz):
-        if rank == 0:
-            logger.info("Checkpointing final state ...")
-        my_checkpoint(current_step, t=current_t,
-                      dt=(current_t - checkpoint_t),
-                      state=current_state, force=True)
+    if rank == 0:
+        logger.info("Checkpointing final state ...")
+    my_checkpoint(current_step, t=current_t,
+                  dt=(current_t - checkpoint_t),
+                  state=current_state, force=True)
 
     if logmgr:
         logmgr.close()
