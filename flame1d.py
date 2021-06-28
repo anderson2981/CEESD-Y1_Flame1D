@@ -52,7 +52,7 @@ from grudge.op import nodal_max
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 
 from mirgecom.navierstokes import ns_operator
-from mirgecom.fluid import make_conserved
+from mirgecom.fluid import make_conserved, split_conserved
 from mirgecom.inviscid import get_inviscid_cfl
 from mirgecom.simutil import (
     inviscid_sim_timestep,
@@ -142,7 +142,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     nrestart = 100
     nhealth = 100
     nstatus = 1
-    current_dt = 5e-9
+    current_dt = 1e-9
     t_final = 1.e-3
     order = 1
     integrator="rk4"
@@ -239,8 +239,20 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     # -- Pick up a CTI for the thermochemistry config
     # --- Note: Users may add their own CTI file by dropping it into
     # ---       mirgecom/mechanisms alongside the other CTI files.
+    fuel = "H2"
+    allowed_fuels = ["H2", "C2H4"]
+    if(fuel not in allowed_fuels):
+        error_message = "Invalid fuel selection: {}".format(fuel)
+        raise RuntimeError(error_message)
+
+    if rank == 0:
+        print(f"Fuel: {fuel}")
+
     from mirgecom.mechanisms import get_mechanism_cti
-    mech_cti = get_mechanism_cti("uiuc")
+    if fuel == "C2H4":
+        mech_cti = get_mechanism_cti("uiuc")
+    elif fuel == "H2":
+        mech_cti = get_mechanism_cti("sanDiego")
 
     cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
     nspecies = cantera_soln.n_species
@@ -248,13 +260,16 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     # Initial temperature, pressure, and mixutre mole fractions are needed to
     # set up the initial state in Cantera.
     temp_unburned = 300.0
-    temp_ignition = 2000.0
+    temp_ignition = 1500.0
     # Parameters for calculating the amounts of fuel, oxidizer, and inert species
+    if fuel == "C2H4":
+        stoich_ratio = 3.0
+    if fuel == "H2":
+        stoich_ratio = 0.5
     equiv_ratio = 1.0
     ox_di_ratio = 0.21
-    stoich_ratio = 3.0
     # Grab the array indices for the specific species, ethylene, oxygen, and nitrogen
-    i_fu = cantera_soln.species_index("C2H4")
+    i_fu = cantera_soln.species_index(fuel)
     i_ox = cantera_soln.species_index("O2")
     i_di = cantera_soln.species_index("N2")
     x = np.zeros(nspecies)
@@ -300,15 +315,20 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     print(f"Unburned state (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
     print(f"Burned state (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
-    flame_start_loc = 0.05
+    flame_start_loc = 0.10
     flame_speed = 1000
 
     # use the burned conditions with a lower temperature
-    bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.01, nspecies=nspecies,
-                              temperature_left=temp_ignition, temperature_right=temp_unburned,
-                              pressure_left=pres_burned, pressure_right=pres_unburned,
-                              velocity_left=vel_burned, velocity_right=vel_unburned,
-                              species_mass_left=y_burned, species_mass_right=y_unburned)
+    #bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.01, nspecies=nspecies,
+                              #temperature_left=temp_ignition, temperature_right=temp_unburned,
+                              #pressure_left=pres_burned, pressure_right=pres_unburned,
+                              #velocity_left=vel_burned, velocity_right=vel_unburned,
+                              #species_mass_left=y_burned, species_mass_right=y_unburned)
+    bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.0005, nspecies=nspecies,
+                              temperature_right=temp_ignition, temperature_left=temp_unburned,
+                              pressure_right=pres_burned, pressure_left=pres_unburned,
+                              velocity_right=vel_burned, velocity_left=vel_unburned,
+                              species_mass_right=y_burned, species_mass_left=y_unburned)
 
     inflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_burned, 
                                      temperature=temp_ignition, massfractions= y_burned,
@@ -317,26 +337,56 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                                      temperature=temp_unburned, massfractions= y_unburned,
                                      velocity=vel_unburned)
 
+    def symmetry(nodes, eos, cv=None, **kwargs):
+        dim = len(nodes)
+
+        if cv is not None:
+            #cv = split_conserved(dim, q)
+            mass = cv.mass
+            momentum = cv.momentum
+            momentum[1] = -1.0 * momentum[1]
+            ke = .5*np.dot(cv.momentum, cv.momentum)/cv.mass
+            energy = cv.energy
+            species_mass = cv.species_mass
+            return make_conserved(dim=dim, mass=mass, momentum=momentum, energy=energy,
+                                  species_mass=species_mass)
+
+    def dummy(nodes, eos, cv=None, **kwargs):
+        dim = len(nodes)
+
+        if cv is not None:
+            #cv = split_conserved(dim, q)
+            mass = cv.mass
+            momentum = cv.momentum
+            ke = .5*np.dot(cv.momentum, cv.momentum)/cv.mass
+            energy = cv.energy
+            species_mass = cv.species_mass
+            return make_conserved(dim=dim, mass=mass, momentum=momentum, energy=energy,
+                                  species_mass=species_mass)
+
     inflow = PrescribedViscousBoundary(q_func=inflow_init)
     outflow = PrescribedViscousBoundary(q_func=outflow_init)
+    wall_symmetry = PrescribedViscousBoundary(q_func=symmetry)
+    wall_dummy = PrescribedViscousBoundary(q_func=dummy)
     wall = PrescribedViscousBoundary()  # essentially a "dummy" use the interior solution for the exterior
 
     boundaries = {DTAG_BOUNDARY("Inflow"): inflow,
                   DTAG_BOUNDARY("Outflow"): outflow,
-                  DTAG_BOUNDARY("Wall"): wall}
+                  #DTAG_BOUNDARY("Wall"): wall_dummy}
+                  DTAG_BOUNDARY("Wall"): wall_symmetry}
 
     if restart_step is None:
-        char_len = 0.001
+        char_len = 0.0001
         box_ll = (0.0, 0.0)
-        box_ur = (0.25, 0.01)
+        box_ur = (0.2, 0.00125)
         num_elements = (int((box_ur[0]-box_ll[0])/char_len),
                             int((box_ur[1]-box_ll[1])/char_len))
     
         from meshmode.mesh.generation import generate_regular_rect_mesh
         generate_mesh = partial(generate_regular_rect_mesh, a=box_ll, b=box_ur, n=num_elements,
           boundary_tag_to_face={
-              "Inflow":["-x"],
-              "Outflow":["+x"],
+              "Inflow":["+x"],
+              "Outflow":["-x"],
               "Wall":["+y","-y"]
               }
           )
@@ -346,7 +396,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     else:  # Restart
         from mirgecom.restart import read_restart_data
         restart_file = restart_path+snapshot_pattern.format(casename=restart_name, step=restart_step, rank=rank)
-        restart_data = read_restart_data(restart_file)
+        restart_data = read_restart_data(actx, restart_file)
 
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
@@ -493,13 +543,26 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
                                   #species_mass_left=y_burned, species_mass_right=y_unburned)
 
             reaction_rates = eos.get_production_rates(cv=state)
+
+            # conserved quantities
             viz_fields = [
-                ("cv", state), 
-                ("dv", eos.dependent_vars(state)),
+                #("cv", state), 
+                ("CV_rho", state.mass),
+                ("CV_rhoU", state.momentum[0]),
+                ("CV_rhoV", state.momentum[1]),
+                ("CV_rhoE", state.energy)
+            ]
+            # species mass fractions
+            viz_fields.extend(
+                ("Y_"+species_names[i], state.species_mass[i]/state.mass)
+                for i in range(nspecies))
+            # dependent variables
+            viz_fields.extend([
+                ("DV", eos.dependent_vars(state)),
                 #("exact_soln", exact_soln),
                 ("reaction_rates", reaction_rates),
                 ("cfl", local_cfl)
-            ]
+            ])
 
             write_visfile(discr, viz_fields, visualizer, vizname=viz_path+casename,
                           step=step, t=t, overwrite=True, vis_timer=vis_timer)
