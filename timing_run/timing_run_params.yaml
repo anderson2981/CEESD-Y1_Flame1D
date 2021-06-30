@@ -4,5 +4,6 @@ nhealth: 100
 nstatus: 1
 current_dt: 1e-9
 t_final: 2.e-8
-order:  1
+order: 1
 integrator: rk4
+fuel: C2H4

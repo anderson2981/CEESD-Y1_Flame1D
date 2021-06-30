@@ -146,6 +146,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     t_final = 1.e-3
     order = 1
     integrator="rk4"
+    fuel = "C2H4"
 
     if user_input_file:
         if rank ==0:
@@ -187,6 +188,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
             integrator = input_data["integrator"]
         except KeyError:
             pass
+        try:
+            fuel = input_data["fuel"]
+        except KeyError:
+            pass
 
     # param sanity check
     allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
@@ -201,8 +206,13 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         timestepper = lsrk54_step
     if integrator == "lsrk144":
         timestepper = lsrk144_step
-        
-    if(rank == 0):
+
+    allowed_fuels = ["H2", "C2H4"]
+    if(fuel not in allowed_fuels):
+        error_message = "Invalid fuel selection: {}".format(fuel)
+        raise RuntimeError(error_message)
+
+    if rank == 0 :
         print(f'#### Simluation control data: ####')
         print(f'\tnviz = {nviz}')
         print(f'\tnrestart = {nrestart}')
@@ -212,6 +222,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         print(f'\tt_final = {t_final}')
         print(f'\torder = {order}')
         print(f"\tTime integration {integrator}")
+        print(f"\tFuel: {fuel}")
         print(f'#### Simluation control data: ####')
 
     restart_path='restart_data/'
@@ -239,20 +250,13 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
     # -- Pick up a CTI for the thermochemistry config
     # --- Note: Users may add their own CTI file by dropping it into
     # ---       mirgecom/mechanisms alongside the other CTI files.
-    fuel = "H2"
-    allowed_fuels = ["H2", "C2H4"]
-    if(fuel not in allowed_fuels):
-        error_message = "Invalid fuel selection: {}".format(fuel)
-        raise RuntimeError(error_message)
-
-    if rank == 0:
-        print(f"Fuel: {fuel}")
 
     from mirgecom.mechanisms import get_mechanism_cti
     if fuel == "C2H4":
         mech_cti = get_mechanism_cti("uiuc")
     elif fuel == "H2":
-        mech_cti = get_mechanism_cti("sanDiego")
+        #mech_cti = get_mechanism_cti("sanDiego")
+        mech_cti = get_mechanism_cti("sanDiego_trans")
 
     cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
     nspecies = cantera_soln.n_species
@@ -341,11 +345,9 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         dim = len(nodes)
 
         if cv is not None:
-            #cv = split_conserved(dim, q)
             mass = cv.mass
             momentum = cv.momentum
             momentum[1] = -1.0 * momentum[1]
-            ke = .5*np.dot(cv.momentum, cv.momentum)/cv.mass
             energy = cv.energy
             species_mass = cv.species_mass
             return make_conserved(dim=dim, mass=mass, momentum=momentum, energy=energy,
@@ -355,10 +357,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
         dim = len(nodes)
 
         if cv is not None:
-            #cv = split_conserved(dim, q)
             mass = cv.mass
             momentum = cv.momentum
-            ke = .5*np.dot(cv.momentum, cv.momentum)/cv.mass
             energy = cv.energy
             species_mass = cv.species_mass
             return make_conserved(dim=dim, mass=mass, momentum=momentum, energy=energy,
@@ -372,6 +372,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
 
     boundaries = {DTAG_BOUNDARY("Inflow"): inflow,
                   DTAG_BOUNDARY("Outflow"): outflow,
+                  #DTAG_BOUNDARY("Wall"): wall}
                   #DTAG_BOUNDARY("Wall"): wall_dummy}
                   DTAG_BOUNDARY("Wall"): wall_symmetry}
 
@@ -569,6 +570,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d", user_input_file
 
         if errors:
             raise RuntimeError("Error detected by user checkpoint, exiting.")
+
+        return dt
 
     if rank == 0:
         logging.info("Stepping.")
