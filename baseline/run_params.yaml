@@ -1,0 +1,9 @@
+nviz: 25
+nrestart: 50
+nhealth: 10
+nstatus: 1
+current_dt: 1e-9
+t_final: 2.5e-3
+order:  1
+integrator: euler
+fuel:  H2
