@@ -1,0 +1,10 @@
+nviz: 1
+nrestart: 1
+nhealth: 1
+current_dt: 5e-8
+t_final: 1.e-7
+order:  1
+alpha_sc: 0.5
+s0_sc: -5.0
+kappa_sc: 0.5
+integrator: euler
