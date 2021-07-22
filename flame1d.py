@@ -28,7 +28,6 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-import os
 import yaml
 import logging
 import numpy as np
@@ -63,9 +62,9 @@ from mirgecom.mpi import mpi_entry_point
 import pyopencl.tools as cl_tools
 # from mirgecom.checkstate import compare_states
 from mirgecom.integrators import (
-    rk4_step, 
-    lsrk54_step, 
-    lsrk144_step, 
+    rk4_step,
+    lsrk54_step,
+    lsrk144_step,
     euler_step
 )
 from mirgecom.steppers import advance_state
@@ -211,7 +210,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         error_message = "Invalid fuel selection: {}".format(fuel)
         raise RuntimeError(error_message)
 
-    if rank == 0 :
+    if rank == 0:
         print("#### Simluation control data: ####")
         print(f"\tnviz = {nviz}")
         print(f"\tnrestart = {nrestart}")
@@ -283,7 +282,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     # We need total density, and mass fractions to initialize the fluid/gas state.
     y_unburned = np.zeros(nspecies)
     can_t, rho_unburned, y_unburned = cantera_soln.TDY
-    can_p = cantera_soln.P
 
     # *can_t*, *can_p* should not differ (significantly) from user's initial data,
     # but we want to ensure that we use exactly the same starting point as Cantera,
@@ -307,30 +305,36 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     species_names = pyrometheus_mechanism.species_names
 
     print(f"Pyrometheus mechanism species names {species_names}")
-    print(f"Unburned state (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
-    print(f"Burned state (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
+    print(f"Unburned (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
+    print(f"Burned (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
     flame_start_loc = 0.10
-    flame_speed = 1000
 
     # use the burned conditions with a lower temperature
-    #bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.01, nspecies=nspecies,
-                              #temperature_left=temp_ignition, temperature_right=temp_unburned,
-                              #pressure_left=pres_burned, pressure_right=pres_unburned,
-                              #velocity_left=vel_burned, velocity_right=vel_unburned,
-                              #species_mass_left=y_burned, species_mass_right=y_unburned)
-    bulk_init = PlanarDiscontinuity(dim=dim, disc_location=flame_start_loc, sigma=0.0005, nspecies=nspecies,
-                              temperature_right=temp_ignition, temperature_left=temp_unburned,
-                              pressure_right=pres_burned, pressure_left=pres_unburned,
-                              velocity_right=vel_burned, velocity_left=vel_unburned,
-                              species_mass_right=y_burned, species_mass_left=y_unburned)
-
-    inflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_burned, 
-                                     temperature=temp_ignition, massfractions= y_burned,
+    bulk_init = PlanarDiscontinuity(dim=dim,
+                                    disc_location=flame_start_loc,
+                                    sigma=0.0005,
+                                    nspecies=nspecies,
+                                    temperature_right=temp_ignition,
+                                    temperature_left=temp_unburned,
+                                    pressure_right=pres_burned,
+                                    pressure_left=pres_unburned,
+                                    velocity_right=vel_burned,
+                                    velocity_left=vel_unburned,
+                                    species_mass_right=y_burned,
+                                    species_mass_left=y_unburned)
+    inflow_init = MixtureInitializer(dim=dim,
+                                     nspecies=nspecies,
+                                     pressure=pres_burned,
+                                     temperature=temp_ignition,
+                                     massfractions=y_burned,
                                      velocity=vel_burned)
-    outflow_init = MixtureInitializer(dim=dim, nspecies=nspecies, pressure=pres_unburned, 
-                                     temperature=temp_unburned, massfractions= y_unburned,
-                                     velocity=vel_unburned)
+    outflow_init = MixtureInitializer(dim=dim,
+                                      nspecies=nspecies,
+                                      pressure=pres_unburned,
+                                      temperature=temp_unburned,
+                                      massfractions=y_unburned,
+                                      velocity=vel_unburned)
 
     def symmetry(nodes, eos, cv=None, **kwargs):
         dim = len(nodes)
@@ -341,7 +345,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             momentum[1] = -1.0 * momentum[1]
             energy = cv.energy
             species_mass = cv.species_mass
-            return make_conserved(dim=dim, mass=mass, momentum=momentum, energy=energy,
+            return make_conserved(dim=dim,
+                                  mass=mass,
+                                  momentum=momentum,
+                                  energy=energy,
                                   species_mass=species_mass)
 
     def dummy(nodes, eos, cv=None, **kwargs):
@@ -352,14 +359,15 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             momentum = cv.momentum
             energy = cv.energy
             species_mass = cv.species_mass
-            return make_conserved(dim=dim, mass=mass, momentum=momentum, energy=energy,
+            return make_conserved(dim=dim,
+                                  mass=mass,
+                                  momentum=momentum,
+                                  energy=energy,
                                   species_mass=species_mass)
 
     inflow = PrescribedViscousBoundary(q_func=inflow_init)
     outflow = PrescribedViscousBoundary(q_func=outflow_init)
     wall_symmetry = PrescribedViscousBoundary(q_func=symmetry)
-    wall_dummy = PrescribedViscousBoundary(q_func=dummy)
-    wall = PrescribedViscousBoundary()  # essentially a "dummy" use the interior solution for the exterior
 
     boundaries = {DTAG_BOUNDARY("Inflow"): inflow,
                   DTAG_BOUNDARY("Outflow"): outflow,
@@ -367,37 +375,44 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                   #DTAG_BOUNDARY("Wall"): wall_dummy}
                   DTAG_BOUNDARY("Wall"): wall_symmetry}
 
+    restart_step = None
     if restart_file is None:
         char_len = 0.0001
         box_ll = (0.0, 0.0)
         box_ur = (0.2, 0.00125)
         num_elements = (int((box_ur[0]-box_ll[0])/char_len),
                             int((box_ur[1]-box_ll[1])/char_len))
-    
+
         from meshmode.mesh.generation import generate_regular_rect_mesh
-        generate_mesh = partial(generate_regular_rect_mesh, a=box_ll, b=box_ur, n=num_elements,
-          boundary_tag_to_face={
-              "Inflow":["+x"],
-              "Outflow":["-x"],
-              "Wall":["+y","-y"]
-              }
-          )
-        local_mesh, global_nelements = generate_and_distribute_mesh(comm, generate_mesh)
+        generate_mesh = partial(generate_regular_rect_mesh,
+                                a=box_ll,
+                                b=box_ur,
+                                n=num_elements,
+                                boundary_tag_to_face={
+                                    "Inflow": ["+x"],
+                                    "Outflow": ["-x"],
+                                    "Wall": ["+y", "-y"]})
+        local_mesh, global_nelements = (
+            generate_and_distribute_mesh(comm, generate_mesh))
         local_nelements = local_mesh.nelements
 
     else:  # Restart
         from mirgecom.restart import read_restart_data
         restart_data = read_restart_data(actx, restart_file)
-
+        restart_step = restart_data["step"]
         local_mesh = restart_data["local_mesh"]
         local_nelements = local_mesh.nelements
         global_nelements = restart_data["global_nelements"]
+        restart_order = int(restart_data["order"])
 
         assert comm.Get_size() == restart_data["num_parts"]
 
     if rank == 0:
         logging.info("Making discretization")
-    discr = EagerDGDiscretization(actx, local_mesh, order=order, mpi_communicator=comm)
+    discr = EagerDGDiscretization(actx,
+                                  local_mesh,
+                                  order=order,
+                                  mpi_communicator=comm)
     nodes = thaw(actx, discr.nodes())
 
     if restart_file is None:
@@ -410,9 +425,26 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     else:
         current_t = restart_data["t"]
         current_step = restart_step
+
+        if restart_order != order:
+            restart_discr = EagerDGDiscretization(
+                actx,
+                local_mesh,
+                order=restart_order,
+                mpi_communicator=comm)
+            from meshmode.discretization.connection import make_same_mesh_connection
+            connection = make_same_mesh_connection(
+                actx,
+                discr.discr_from_dd("vol"),
+                restart_discr.discr_from_dd("vol"))
+
+            restart_state = restart_data["state"]
+            current_state = connection(restart_state)
+        else:
+            current_state = restart_data["state"]
+
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
-        #current_state = make_fluid_restart_state(actx, discr.discr_from_dd("vol"), restart_data["state"])
         current_state = restart_data["state"]
 
     vis_timer = None
@@ -426,16 +458,16 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         logmgr.add_quantity(log_cfl, interval=nstatus)
         #logmgr_add_package_versions(logmgr)
 
-        logmgr.add_watches([("step.max", "step = {value}, "),
-                            ("t_sim.max", "sim time: {value:1.6e} s, "),
-                            ("cfl.max", "cfl = {value:1.4f}\n"),
-                            ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
-                            ("max_pressure",    "{value:1.9e})\n"),
-                            ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
-                            ("max_temperature",    "{value:7g})\n"),
-                            ("t_step.max", "------- step walltime: {value:6g} s, "),
-                            ("t_log.max", "log walltime: {value:6g} s")
-                           ])
+        logmgr.add_watches([
+            ("step.max", "step = {value}, "),
+            ("t_sim.max", "sim time: {value:1.6e} s, "),
+            ("cfl.max", "cfl = {value:1.4f}\n"),
+            ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
+            ("max_pressure",    "{value:1.9e})\n"),
+            ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
+            ("max_temperature",    "{value:7g})\n"),
+            ("t_step.max", "------- step walltime: {value:6g} s, "),
+            ("t_log.max", "log walltime: {value:6g} s")])
 
         try:
             logmgr.add_watches(["memory_usage.max"])
@@ -464,7 +496,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     if rank == 0:
         logger.info(init_message)
 
-    def my_write_viz(step, t, dt, state, dv=None, reaction_rates=None, ts_field=None):
+    def my_write_viz(step, t, dt, state, dv=None,
+                     reaction_rates=None, ts_field=None):
         if dv is None:
             dv = eos.dependent_vars(state)
         if reaction_rates is None:
@@ -596,7 +629,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                       state=current_state, dt=current_dt,
                       t_final=t_final, t=current_t, istep=current_step)
 
-
     # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
@@ -617,20 +649,19 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
 if __name__ == "__main__":
     import sys
-    
     logging.basicConfig(format="%(message)s", level=logging.INFO)
 
     import argparse
     parser = argparse.ArgumentParser(description="MIRGE-Com 1D Flame Driver")
-    parser.add_argument('-r', '--restart_file',  type=ascii, 
-                        dest='restart_file', nargs='?', action='store', 
-                        help='simulation restart file')
-    parser.add_argument('-i', '--input_file',  type=ascii,
-                        dest='input_file', nargs='?', action='store',
-                        help='simulation config file')
-    parser.add_argument('-c', '--casename',  type=ascii,
-                        dest='casename', nargs='?', action='store',
-                        help='simulation case name')
+    parser.add_argument("-r", "--restart_file",  type=ascii,
+                        dest="restart_file", nargs="?", action="store",
+                        help="simulation restart file")
+    parser.add_argument("-i", "--input_file",  type=ascii,
+                        dest="input_file", nargs="?", action="store",
+                        help="simulation config file")
+    parser.add_argument("-c", "--casename",  type=ascii,
+                        dest="casename", nargs="?", action="store",
+                        help="simulation case name")
     parser.add_argument("--profile", action="store_true", default=False,
         help="enable kernel profiling [OFF]")
     parser.add_argument("--log", action="store_true", default=True,
@@ -644,7 +675,7 @@ if __name__ == "__main__":
     casename = "flame1d"
     if(args.casename):
         print(f"Custom casename {args.casename}")
-        casename = (args.casename).replace("'","")
+        casename = (args.casename).replace("'", "")
     else:
         print(f"Default casename {casename}")
 
@@ -653,9 +684,9 @@ if __name__ == "__main__":
         restart_file = (args.restart_file).replace("'", "")
         print(f"Restarting from file: {restart_file}")
 
-    input_file=None
+    input_file = None
     if(args.input_file):
-        input_file = (args.input_file).replace("'","")
+        input_file = (args.input_file).replace("'", "")
         print(f"Reading user input from {args.input_file}")
     else:
         print("No user input file, using default values")
@@ -663,4 +694,3 @@ if __name__ == "__main__":
     print(f"Running {sys.argv[0]}\n")
     main(restart_file=restart_file, user_input_file=input_file,
          use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)
-
