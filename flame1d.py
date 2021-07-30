@@ -135,15 +135,26 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             actx = PyOpenCLArrayContext(queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
 
-    # default input values that will be read from input (if they exist)
+    # default i/o frequencies
     nviz = 100
     nrestart = 100
     nhealth = 100
     nstatus = 1
+
+    # default timestepping control
+    integrator = "rk4"
     current_dt = 1e-9
     t_final = 1.e-3
+
+    # default health status bounds
+    health_pres_min = 1.0
+    health_pres_max = 2.0e6
+    health_mass_frac_min = -1.0e-9
+    health_mass_frac_max = 1.0 + 1.e-9
+
+    # discretization and model control
     order = 1
-    integrator = "rk4"
+    char_len = 0.0001
     fuel = "C2H4"
 
     if user_input_file:
@@ -183,11 +194,31 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         except KeyError:
             pass
         try:
+            char_len = float(input_data["char_len"])
+        except KeyError:
+            pass
+        try:
             integrator = input_data["integrator"]
         except KeyError:
             pass
         try:
             fuel = input_data["fuel"]
+        except KeyError:
+            pass
+        try:
+            health_pres_min = float(input_data["health_pres_min"])
+        except KeyError:
+            pass
+        try:
+            health_pres_max = float(input_data["health_pres_max"])
+        except KeyError:
+            pass
+        try:
+            health_mass_frac_min = float(input_data["health_mass_frac_min"])
+        except KeyError:
+            pass
+        try:
+            health_mass_frac_max = float(input_data["health_mass_frac_max"])
         except KeyError:
             pass
 
@@ -243,8 +274,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     if fuel == "C2H4":
         mech_cti = get_mechanism_cti("uiuc")
     elif fuel == "H2":
-        # mech_cti = get_mechanism_cti("sanDiego")
-        mech_cti = get_mechanism_cti("sanDiego_trans")
+        mech_cti = get_mechanism_cti("sanDiego")
+        # mech_cti = get_mechanism_cti("sanDiego_trans")
 
     cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
     nspecies = cantera_soln.n_species
@@ -377,7 +408,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     restart_step = None
     if restart_file is None:
-        char_len = 0.0001
         box_ll = (0.0, 0.0)
         box_ur = (0.2, 0.00125)
         num_elements = (int((box_ur[0]-box_ll[0])/char_len),
@@ -464,7 +494,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             ("cfl.max", "cfl = {value:1.4f}\n"),
             ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
             ("max_pressure",    "{value:1.9e})\n"),
-            ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
+            ("min_temperature", "------- T (min, max) (K)  = ({value:5g}, "),
             ("max_temperature",    "{value:7g})\n"),
             ("t_step.max", "------- step walltime: {value:6g} s, "),
             ("t_log.max", "log walltime: {value:6g} s")])
@@ -532,17 +562,59 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             }
             write_restart_file(actx, rst_data, rst_fname, comm)
 
-    def my_health_check(dv):
+    def my_health_check(state, dv):
         health_error = False
         if check_naninf_local(discr, "vol", dv.pressure):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if check_range_local(discr, "vol", dv.pressure, 1, 2e6):
+        if check_range_local(discr, "vol", dv.pressure, health_pres_min,
+                             health_pres_max):
             health_error = True
             logger.info(f"{rank=}: Pressure range violation.")
 
+        for i in range(nspecies):
+            if check_range_local(discr, "vol", state.species_mass[i]/state.mass,
+                                 health_mass_frac_min, health_mass_frac_max):
+                health_error = True
+                logger.info(f"{rank=}: species mass fraction range violation.")
+
         return health_error
+
+    def my_health_report(state, dv):
+        logger.info("Simulation global status report.")
+        from grudge.op import nodal_max, nodal_min
+        p_min = nodal_min(discr, "vol", dv.pressure)
+        p_max = nodal_max(discr, "vol", dv.pressure)
+        temp_min = nodal_min(discr, "vol", dv.temperature)
+        temp_max = nodal_max(discr, "vol", dv.temperature)
+        rho_min = nodal_min(discr, "vol", state.mass)
+        rho_max = nodal_max(discr, "vol", state.mass)
+        from pytools.obj_array import obj_array_vectorize
+        vel_min = obj_array_vectorize(lambda x: nodal_min(discr, "vol", x),
+                                      state.momentum/state.mass)
+        vel_max = obj_array_vectorize(lambda x: nodal_max(discr, "vol", x),
+                                      state.momentum/state.mass)
+        y_min = obj_array_vectorize(lambda x: nodal_min(discr, "vol", x),
+                                      state.species_mass/state.mass)
+        y_max = obj_array_vectorize(lambda x: nodal_max(discr, "vol", x),
+                                      state.species_mass/state.mass)
+        energy_min = nodal_min(discr, "vol", state.energy)
+        energy_max = nodal_max(discr, "vol", state.energy)
+
+        logger.info(f" ---- Density range ({rho_min: 1.5e}, {rho_max: 1.5e})")
+        for i in range(dim):
+            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e}, {vel_max[i]: 1.5e})")
+        logger.info(f" ---- Energy range ({energy_min: 1.9e}, {energy_max: 1.9e})")
+        for i in range(nspecies):
+            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e}, {y_max[i]: 1.5e}) ({species_names[i]})")
+        logger.info(f" ---- Pressure range ({p_min: 1.9e}, {p_max: 1.9e})")
+        logger.info(f" ---- Temperature range ({temp_min: 5g}, {temp_max: 5g})")
+
+        ##for i in range(nspecies))
+        #if check_range_local(discr, "vol", state.species_mass[0]/state.mass, 0., 1.0):
+            #health_error = True
+            #logger.info(f"{rank=}: species mass fraction range violation.")
 
     def my_get_timestep(t, dt, state):
         t_remaining = max(0, t_final - t)
@@ -567,8 +639,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             if logmgr:
                 logmgr.tick_before()
 
-            dt = get_sim_timestep(discr, state, t, dt, current_cfl, eos,
-                                  t_final, constant_cfl)
+            ts_field, cfl, dt = my_get_timestep(t, dt, state)
+            log_cfl.set_quantity(cfl)
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
@@ -577,11 +649,12 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             if do_health:
                 dv = eos.dependent_vars(state)
                 from mirgecom.simutil import allsync
-                health_errors = allsync(my_health_check(dv), comm,
+                health_errors = allsync(my_health_check(state, dv), comm,
                                         op=MPI.LOR)
                 if health_errors:
                     if rank == 0:
                         logger.info("Fluid solution failed health check.")
+                    my_health_report(state, dv)
                     raise MyRuntimeError("Failed simulation health check.")
 
             if do_restart:
@@ -633,9 +706,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     if rank == 0:
         logger.info("Checkpointing final state ...")
     final_dv = eos.dependent_vars(current_state)
-    final_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
-                                current_cfl, eos, t_final, constant_cfl)
-    my_write_viz(step=current_step, t=current_t, dt=final_dt, state=current_state,
+    my_write_viz(step=current_step, t=current_t, dt=current_dt, state=current_state,
                  dv=final_dv)
     my_write_restart(step=current_step, t=current_t, state=current_state)
 
