@@ -44,6 +44,9 @@ from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
+from meshmode.array_context import (
+    SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
+)
 
 from mirgecom.navierstokes import ns_operator
 from mirgecom.simutil import (
@@ -140,6 +143,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     nrestart = 100
     nhealth = 100
     nstatus = 1
+    log_dependent = 1
 
     # default timestepping control
     integrator = "rk4"
@@ -219,6 +223,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             pass
         try:
             health_mass_frac_max = float(input_data["health_mass_frac_max"])
+        except KeyError:
+            pass
+        try:
+            log_dependent = int(input_data["logDependent"])
         except KeyError:
             pass
 
@@ -482,27 +490,33 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_many_discretization_quantities(logmgr, discr, dim,
-            extract_vars_for_logging, units_for_logging)
         logmgr_set_time(logmgr, current_step, current_t)
-        logmgr.add_quantity(log_cfl, interval=nstatus)
         #logmgr_add_package_versions(logmgr)
 
         logmgr.add_watches([
             ("step.max", "step = {value}, "),
             ("t_sim.max", "sim time: {value:1.6e} s, "),
-            ("cfl.max", "cfl = {value:1.4f}\n"),
-            ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
-            ("max_pressure",    "{value:1.9e})\n"),
-            ("min_temperature", "------- T (min, max) (K)  = ({value:5g}, "),
-            ("max_temperature",    "{value:7g})\n"),
             ("t_step.max", "------- step walltime: {value:6g} s, "),
-            ("t_log.max", "log walltime: {value:6g} s")])
+            ("t_log.max", "log walltime: {value:6g} s\n")])
 
         try:
             logmgr.add_watches(["memory_usage.max"])
         except KeyError:
             pass
+
+        if log_dependent:
+            logmgr_add_many_discretization_quantities(logmgr, discr, dim,
+                                                      extract_vars_for_logging,
+                                                      units_for_logging)
+            logmgr.add_quantity(log_cfl, interval=nstatus)
+            logmgr.add_watches([
+                ("cfl.max", "cfl = {value:1.4f}\n"),
+                ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
+                ("max_pressure", "{value:1.9e})\n"),
+                ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
+                ("max_temperature", "{value:7g})\n"),
+            ])
+
 
         if use_profiling:
             logmgr.add_watches(["pyopencl_array_time.max"])
@@ -735,7 +749,7 @@ if __name__ == "__main__":
                         help="simulation case name")
     parser.add_argument("--profile", action="store_true", default=False,
         help="enable kernel profiling [OFF]")
-    parser.add_argument("--log", action="store_true", default=True,
+    parser.add_argument("--log", action="store_true", default=False,
         help="enable logging profiling [ON]")
     parser.add_argument("--lazy", action="store_true", default=False,
         help="enable lazy evaluation [OFF]")
