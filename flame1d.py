@@ -79,7 +79,6 @@ from mirgecom.initializers import (
 from mirgecom.transport import SimpleTransport
 from mirgecom.eos import PyrometheusMixture
 import cantera
-import pyrometheus as pyro
 
 from logpyle import IntervalTimer, set_dt
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
@@ -323,7 +322,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
     pres_burned = cantera_soln.P
 
-    pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
+    from mirgecom.thermochemistry import make_pyrometheus_mechanism
+    pyrometheus_mechanism = make_pyrometheus_mechanism(actx, cantera_soln)
 
     kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
     mu = 1.e-5
@@ -571,7 +571,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         if check_range_local(discr, "vol", dv.pressure, health_pres_min,
                              health_pres_max):
             health_error = True
-            logger.info(f"{rank=}: Pressure range violation.")
+            logger.info(f"{rank=}: Pressure range violation ({health_pres_min},"
+                        f"{health_pres_max}).")
+            max_pressure = discr.norm(dv.pressure, np.inf)
+            logger.info(f"{rank=}: {max_pressure=}")
 
         for i in range(nspecies):
             if check_range_local(discr, "vol", state.species_mass[i]/state.mass,
@@ -604,17 +607,14 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
         logger.info(f" ---- Density range ({rho_min: 1.5e}, {rho_max: 1.5e})")
         for i in range(dim):
-            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e}, {vel_max[i]: 1.5e})")
+            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e},"
+                        f" {vel_max[i]: 1.5e})")
         logger.info(f" ---- Energy range ({energy_min: 1.9e}, {energy_max: 1.9e})")
         for i in range(nspecies):
-            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e}, {y_max[i]: 1.5e}) ({species_names[i]})")
+            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e},"
+                        f" {y_max[i]: 1.5e}) ({species_names[i]})")
         logger.info(f" ---- Pressure range ({p_min: 1.9e}, {p_max: 1.9e})")
         logger.info(f" ---- Temperature range ({temp_min: 5g}, {temp_max: 5g})")
-
-        ##for i in range(nspecies))
-        #if check_range_local(discr, "vol", state.species_mass[0]/state.mass, 0., 1.0):
-            #health_error = True
-            #logger.info(f"{rank=}: species mass fraction range violation.")
 
     def my_get_timestep(t, dt, state):
         t_remaining = max(0, t_final - t)
