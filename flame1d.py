@@ -37,17 +37,16 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 
 from arraycontext import thaw, freeze
-from meshmode.array_context import PyOpenCLArrayContext
+from meshmode.array_context import (
+    PyOpenCLArrayContext,
+    SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
+)
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
-from meshmode.array_context import (
-    SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
-)
-
 from mirgecom.navierstokes import ns_operator
 from mirgecom.euler import euler_operator
 from mirgecom.simutil import (
@@ -130,9 +129,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     else:
         queue = cl.CommandQueue(cl_ctx)
         if use_lazy_eval:
-            from meshmode.array_context import (
-                SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
-            )
             actx = PytatoPyOpenCLArrayContext(queue)
             log_dependent = 0
         else:
@@ -386,26 +382,28 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     def dummy(nodes, eos, cv, **kwargs):
         return 1.0*cv
 
-    def inflow_bnd(nodes, eos, cv, **kwargs):
+    def inflow_bnd(nodes, cv, **kwargs):
         ones = 0*cv.mass + 1.0
         pressure = pres_burned * ones
         temperature = temp_burned * ones
         velocity = 0*cv.velocity + vel_burned
-        # velocity = make_obj_array([self._velocity[i] * ones
-        #                           for i in range(self._dim)])
-        y = 0*cv.species_mass_fractions + y_burned
-        # y = make_obj_array([self._massfracs[i] * ones
-        #                    for i in range(self._nspecies)])
-        # mass = eos.get_density(pressure, temperature, y)
-        mass = 0*cv.mass + eos.get_density(pressure, temperature, y)
+
+        # y = 0*cv.species_mass_fractions + y_burned
+        # y = cv.species_mass_fractions
+        y = make_obj_array([y_burned[i] * ones
+                            for i in range(nspecies)])
+
+        import ipdb
+        ipdb.set_trace()
+
+        mass = eos.get_density(pressure, temperature, y)
         specmass = mass * y
         mom = mass * velocity
-        # internal_energy = eos.get_internal_energy(temperature=temperature,
-        #                                           species_mass_fractions=y)
-        # kinetic_energy = 0.5 * mass * np.dot(velocity, velocity)
-        # energy = mass * (internal_energy + kinetic_energy)
-        # energy = internal_energy
-        energy = cv.energy  # - kinetic_energy # + internal_energy # + kinetic_energy
+
+        internal_energy = eos.get_internal_energy(temperature=temperature,
+                                                   species_mass_fractions=y)
+        kinetic_energy = 0.5 * mass * np.dot(velocity, velocity)
+        energy = internal_energy  + kinetic_energy
 
         return make_conserved(dim=cv.dim, mass=mass, energy=energy,
                               momentum=mom, species_mass=specmass)
