@@ -48,7 +48,6 @@ from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.navierstokes import ns_operator
-from mirgecom.euler import euler_operator
 from mirgecom.simutil import (
     check_step,
     get_sim_timestep,
@@ -74,10 +73,7 @@ from mirgecom.integrators import (
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import PrescribedInviscidBoundary
 from mirgecom.fluid import make_conserved
-from mirgecom.initializers import (
-    PlanarDiscontinuity,
-    MixtureInitializer
-)
+from mirgecom.initializers import PlanarDiscontinuity
 from mirgecom.transport import SimpleTransport
 from mirgecom.eos import PyrometheusMixture
 import cantera
@@ -151,7 +147,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     health_pres_max = 2.0e6
     health_mass_frac_min = -1.0e-9
     health_mass_frac_max = 1.0 + 1.e-9
-
+    health_temp_min = 1.0
+    health_temp_max = 3000.0
     # discretization and model control
     order = 1
     char_len = 0.0001
@@ -359,18 +356,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                                     velocity_left=vel_unburned,
                                     species_mass_right=y_burned,
                                     species_mass_left=y_unburned)
-    inflow_init = MixtureInitializer(dim=dim,
-                                     nspecies=nspecies,
-                                     pressure=pres_burned,
-                                     temperature=temp_ignition,
-                                     massfractions=y_burned,
-                                     velocity=vel_burned)
-    outflow_init = MixtureInitializer(dim=dim,
-                                      nspecies=nspecies,
-                                      pressure=pres_unburned,
-                                      temperature=temp_unburned,
-                                      massfractions=y_unburned,
-                                      velocity=vel_unburned)
 
     def symmetry(nodes, eos, cv, **kwargs):
         dim = len(nodes)
@@ -382,45 +367,46 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     def dummy(nodes, eos, cv, **kwargs):
         return 1.0*cv
 
-    def inflow_bnd(nodes, cv, **kwargs):
+    def flow_bnd(nodes, cv, eos, flow_vel, flow_pres, flow_temp, flow_spec,
+                 **kwargs):
         ones = 0*cv.mass + 1.0
-        pressure = pres_burned * ones
-        temperature = temp_burned * ones
-        velocity = 0*cv.velocity + vel_burned
+        pressure = flow_pres * ones
+        temperature = flow_temp * ones
+        velocity = 0*cv.velocity + flow_vel
 
-        # y = 0*cv.species_mass_fractions + y_burned
-        # y = cv.species_mass_fractions
-        y = make_obj_array([y_burned[i] * ones
+        y = make_obj_array([flow_spec[i] * ones
                             for i in range(nspecies)])
-
-        import ipdb
-        ipdb.set_trace()
 
         mass = eos.get_density(pressure, temperature, y)
         specmass = mass * y
         mom = mass * velocity
-
         internal_energy = eos.get_internal_energy(temperature=temperature,
                                                    species_mass_fractions=y)
-        kinetic_energy = 0.5 * mass * np.dot(velocity, velocity)
-        energy = internal_energy  + kinetic_energy
+        kinetic_energy = 0.5 * np.dot(velocity, velocity)
+        energy = mass * (internal_energy + kinetic_energy)
 
         return make_conserved(dim=cv.dim, mass=mass, energy=energy,
                               momentum=mom, species_mass=specmass)
 
-        
-    inflow = PrescribedInviscidBoundary(fluid_solution_func=inflow_init)
-    outflow = PrescribedInviscidBoundary(fluid_solution_func=outflow_init)
-    wall_symmetry = PrescribedInviscidBoundary(fluid_solution_func=symmetry)
-    wall_dummy = PrescribedInviscidBoundary(fluid_solution_func=dummy)
-    inflow_boundary = PrescribedInviscidBoundary(fluid_solution_func=inflow_bnd)
+    def inflow_func(nodes, cv, eos, **kwargs):
+        return flow_bnd(nodes, cv, eos, flow_vel=vel_unburned,
+                        flow_pres=pres_unburned, flow_temp=temp_unburned,
+                        flow_spec=y_unburned, **kwargs)
 
-    # boundaries = {DTAG_BOUNDARY("Inflow"): inflow,
-    #               DTAG_BOUNDARY("Outflow"): outflow,
-    #               # DTAG_BOUNDARY("Wall"): wall}
-    #               # DTAG_BOUNDARY("Wall"): wall_dummy}
-    #               DTAG_BOUNDARY("Wall"): wall_symmetry}
-    boundaries = {BTAG_ALL: inflow_boundary}
+    def outflow_func(nodes, cv, eos, **kwargs):
+        return flow_bnd(nodes, cv, eos, flow_vel=vel_burned, flow_pres=pres_burned,
+                        flow_temp=temp_burned, flow_spec=y_burned, **kwargs)
+
+    wall_symmetry = PrescribedInviscidBoundary(fluid_solution_func=symmetry)
+    inflow_boundary = \
+        PrescribedInviscidBoundary(fluid_solution_func=inflow_func)
+    outflow_boundary = \
+        PrescribedInviscidBoundary(fluid_solution_func=outflow_func)
+
+    boundaries = {DTAG_BOUNDARY("Inflow"): inflow_boundary,
+                  DTAG_BOUNDARY("Outflow"): outflow_boundary,
+                  DTAG_BOUNDARY("Wall"): wall_symmetry}
+
     restart_step = None
     if restart_file is None:
         box_ll = (0.0, 0.0)
@@ -524,7 +510,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                 ("max_temperature", "{value:7g})\n"),
             ])
 
-
         if use_profiling:
             logmgr.add_watches(["pyopencl_array_time.max"])
 
@@ -553,7 +538,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         y = state.species_mass_fractions
         e = eos.internal_energy(state) / state.mass
         return make_obj_array(
-            [pyro_mechanism.get_temperature(e, temperature, y)]
+            [pyrometheus_mechanism.get_temperature(e, temperature, y)]
         )
 
     compute_dependent_vars = actx.compile(eos.dependent_vars)
@@ -577,7 +562,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         return make_obj_array([eos.get_production_rates(state)])
 
     compute_production_rates = actx.compile(get_production_rates)
-
 
     def my_write_viz(step, t, dt, state, dv=None,
                      reaction_rates=None, ts_field=None):
@@ -629,11 +613,40 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             health_error = True
             logger.info(f"{rank=}: Pressure range violation.")
 
+        if check_naninf_local(discr, "vol", temperature):
+            health_error = True
+            logger.info(f"{rank=}: NANs/Infs in temperature data.")
+
+        if check_range_local(discr, "vol", temperature, health_temp_min,
+                             health_temp_max):
+            health_error = True
+            logger.info(f"{rank=}: Temperature range violation.")
+
         for i in range(nspecies):
             if check_range_local(discr, "vol", state.species_mass[i]/state.mass,
                                  health_mass_frac_min, health_mass_frac_max):
                 health_error = True
                 logger.info(f"{rank=}: species mass fraction range violation.")
+
+        # This check is the temperature convergence check
+        # The current *temperature* is what Pyrometheus gets
+        # after a fixed number of Newton iterations, *n_iter*.
+        # Calling `compute_temperature` here with *temperature*
+        # input as the guess returns the calculated gas temperature after
+        # yet another *n_iter*.
+        # The difference between those two temperatures is the
+        # temperature residual, which can be used as an indicator of
+        # convergence in Pyrometheus `get_temperature`.
+        # Note: The local max jig below works around a very long compile
+        # in lazy mode.
+        check_temp, = compute_temperature(state, temperature)
+        check_temp = thaw(freeze(check_temp, actx), actx)
+        temp_resid = actx.np.abs(check_temp - temperature)
+        from grudge.op import nodal_max_loc
+        temp_resid = nodal_max_loc(discr, "vol", temp_resid)
+        if temp_resid > 1e-8:
+            health_error = True
+            logger.info(f"{rank=}: Temperature is not converged {temp_resid=}.")
 
         return health_error
 
@@ -663,10 +676,12 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
         logger.info(f" ---- Density range ({rho_min: 1.5e}, {rho_max: 1.5e})")
         for i in range(dim):
-            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e}, {vel_max[i]: 1.5e})")
+            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e},"
+                        f" {vel_max[i]: 1.5e})")
         logger.info(f" ---- Energy range ({energy_min: 1.9e}, {energy_max: 1.9e})")
         for i in range(nspecies):
-            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e}, {y_max[i]: 1.5e}) ({species_names[i]})")
+            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e},"
+                        f" {y_max[i]: 1.5e}) ({species_names[i]})")
         logger.info(f" ---- Pressure range ({p_min: 1.9e}, {p_max: 1.9e})")
         logger.info(f" ---- Temperature range ({temp_min: 5g}, {temp_max: 5g})")
 
@@ -740,7 +755,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     def my_rhs(t, state):
         return (
-            euler_operator(discr, cv=state, time=t, boundaries=boundaries, eos=eos) +
+            ns_operator(discr, cv=state, t=t, boundaries=boundaries, eos=eos) +
             eos.get_species_source_terms(cv=state)
         )
 
