@@ -367,13 +367,12 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     def dummy(nodes, eos, cv, **kwargs):
         return 1.0*cv
 
-    def flow_bnd(nodes, cv, eos, flow_vel, flow_pres, flow_temp, flow_spec,
-                 **kwargs):
+    def _flow_bnd(nodes, cv, eos, flow_vel, flow_pres, flow_temp, flow_spec,
+                  **kwargs):
         ones = 0*cv.mass + 1.0
         pressure = flow_pres * ones
         temperature = flow_temp * ones
         velocity = 0*cv.velocity + flow_vel
-
         y = make_obj_array([flow_spec[i] * ones
                             for i in range(nspecies)])
 
@@ -389,13 +388,14 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                               momentum=mom, species_mass=specmass)
 
     def inflow_func(nodes, cv, eos, **kwargs):
-        return flow_bnd(nodes, cv, eos, flow_vel=vel_unburned,
-                        flow_pres=pres_unburned, flow_temp=temp_unburned,
-                        flow_spec=y_unburned, **kwargs)
+        return _flow_bnd(nodes, cv, eos, flow_vel=vel_burned,
+                        flow_pres=pres_burned, flow_temp=temp_ignition,
+                        flow_spec=y_burned, **kwargs)
 
     def outflow_func(nodes, cv, eos, **kwargs):
-        return flow_bnd(nodes, cv, eos, flow_vel=vel_burned, flow_pres=pres_burned,
-                        flow_temp=temp_burned, flow_spec=y_burned, **kwargs)
+        return _flow_bnd(nodes, cv, eos, flow_vel=vel_unburned,
+                        flow_pres=pres_unburned, flow_temp=temp_unburned,
+                        flow_spec=y_unburned, **kwargs)
 
     wall_symmetry = PrescribedInviscidBoundary(fluid_solution_func=symmetry)
     inflow_boundary = \
