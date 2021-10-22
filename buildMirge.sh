@@ -53,19 +53,10 @@ fi
 
 if [ -z ${CONDA_PATH+x} ]; then
   echo "CONDA_PATH unset, installing new conda with emirge"
-  echo "./install.sh --env-name=mirgeDriver.Y1nozzle $git_method --branch=parallel-lazy"
+  echo "./install.sh --env-name=mirgeDriver.flame1d $git_method --branch=y1-production"
   ./install.sh --env-name=mirgeDriver.flame1d $git_method --branch=y1-production
 else
   echo "Using existing Conda installation, ${CONDA_PATH}"
-  echo "./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.Y1nozzle $git_method --branch=parallel-lazy"
+  echo "./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d $git_method --branch=y1-production"
   ./install.sh --conda-prefix=$CONDA_PATH --env-name=mirgeDriver.flame1d $git_method --branch=y1-production
 fi
-cd mirgecom
-git pull
-git checkout y1-production
-git checkout parallel-lazy
-git checkout -b mrgy1
-git config user.email "ci@github.com"
-git config user.name "CI Runner"
-git merge y1-production
-cd ../
