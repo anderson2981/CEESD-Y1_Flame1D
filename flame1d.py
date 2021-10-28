@@ -565,19 +565,19 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     def vol_min_loc(x):
         from grudge.op import nodal_min_loc
-        return actx.to_numpy(nodal_min_loc(discr, "vol", x))
+        return actx.to_numpy(nodal_min_loc(discr, "vol", x))[()]
 
     def vol_max_loc(x):
         from grudge.op import nodal_max_loc
-        return actx.to_numpy(nodal_max_loc(discr, "vol", x))
+        return actx.to_numpy(nodal_max_loc(discr, "vol", x))[()]
 
     def vol_min(x):
         from grudge.op import nodal_min
-        return actx.to_numpy(nodal_min(discr, "vol", x))
+        return actx.to_numpy(nodal_min(discr, "vol", x))[()]
 
     def vol_max(x):
         from grudge.op import nodal_max
-        return actx.to_numpy(nodal_max(discr, "vol", x))
+        return actx.to_numpy(nodal_max(discr, "vol", x))[()]
 
     def my_write_viz(step, t, dt, state, dv=None,
                      reaction_rates=None, ts_field=None):
