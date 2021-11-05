@@ -563,6 +563,22 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     compute_production_rates = actx.compile(get_production_rates)
 
+    def vol_min_loc(x):
+        from grudge.op import nodal_min_loc
+        return actx.to_numpy(nodal_min_loc(discr, "vol", x))[()]
+
+    def vol_max_loc(x):
+        from grudge.op import nodal_max_loc
+        return actx.to_numpy(nodal_max_loc(discr, "vol", x))[()]
+
+    def vol_min(x):
+        from grudge.op import nodal_min
+        return actx.to_numpy(nodal_min(discr, "vol", x))[()]
+
+    def vol_max(x):
+        from grudge.op import nodal_max
+        return actx.to_numpy(nodal_max(discr, "vol", x))[()]
+
     def my_write_viz(step, t, dt, state, dv=None,
                      reaction_rates=None, ts_field=None):
         if dv is None:
@@ -613,7 +629,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             health_error = True
             logger.info(f"{rank=}: Pressure range violation ({health_pres_min},"
                         f"{health_pres_max}).")
-            max_pressure = discr.norm(dv.pressure, np.inf)
+            max_pressure = actx.to_numpy(discr.norm(dv.pressure, np.inf))[()]
             logger.info(f"{rank=}: {max_pressure=}")
 
         if check_naninf_local(discr, "vol", temperature):
@@ -645,8 +661,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         check_temp, = compute_temperature(state, temperature)
         check_temp = thaw(freeze(check_temp, actx), actx)
         temp_resid = actx.np.abs(check_temp - temperature)
-        from grudge.op import nodal_max_loc
-        temp_resid = nodal_max_loc(discr, "vol", temp_resid)
+        temp_resid = vol_max_loc(temp_resid)
         if temp_resid > 1e-8:
             health_error = True
             logger.info(f"{rank=}: Temperature is not converged {temp_resid=}.")
@@ -657,25 +672,23 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         logger.info("Simulation global status report.")
         pressure = thaw(freeze(dv.pressure, actx), actx)
         temperature = thaw(freeze(dv.temperature, actx), actx)
-
-        from grudge.op import nodal_max, nodal_min
-        p_min = nodal_min(discr, "vol", pressure)
-        p_max = nodal_max(discr, "vol", pressure)
-        temp_min = nodal_min(discr, "vol", temperature)
-        temp_max = nodal_max(discr, "vol", temperature)
-        rho_min = nodal_min(discr, "vol", state.mass)
-        rho_max = nodal_max(discr, "vol", state.mass)
+        p_min = vol_min(pressure)
+        p_max = vol_max(pressure)
+        temp_min = vol_min(temperature)
+        temp_max = vol_max(temperature)
+        rho_min = vol_min(state.mass)
+        rho_max = vol_max(state.mass)
         from pytools.obj_array import obj_array_vectorize
-        vel_min = obj_array_vectorize(lambda x: nodal_min(discr, "vol", x),
+        vel_min = obj_array_vectorize(lambda x: vol_min(x),
                                       state.momentum/state.mass)
-        vel_max = obj_array_vectorize(lambda x: nodal_max(discr, "vol", x),
+        vel_max = obj_array_vectorize(lambda x: vol_max(x),
                                       state.momentum/state.mass)
-        y_min = obj_array_vectorize(lambda x: nodal_min(discr, "vol", x),
+        y_min = obj_array_vectorize(lambda x: vol_min(x),
                                       state.species_mass/state.mass)
-        y_max = obj_array_vectorize(lambda x: nodal_max(discr, "vol", x),
+        y_max = obj_array_vectorize(lambda x: vol_max(x),
                                       state.species_mass/state.mass)
-        energy_min = nodal_min(discr, "vol", state.energy)
-        energy_max = nodal_max(discr, "vol", state.energy)
+        energy_min = vol_min(state.energy)
+        energy_max = vol_max(state.energy)
 
         logger.info(f" ---- Density range ({rho_min: 1.5e}, {rho_max: 1.5e})")
         for i in range(dim):
@@ -694,14 +707,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             cfl = current_cfl
             ts_field = cfl * compute_dt(state)[0]
             ts_field = thaw(freeze(ts_field, actx), actx)
-            from grudge.op import nodal_min_loc
-            dt = global_reduce(nodal_min_loc(discr, "vol", ts_field), op="min",
-                               comm=comm)
+            dt = global_reduce(vol_min_loc(ts_field), op="min", comm=comm)
         else:
             ts_field = compute_cfl(state, current_dt)[0]
-            from grudge.op import nodal_max_loc
-            cfl = global_reduce(nodal_max_loc(discr, "vol", ts_field), op="max",
-                                comm=comm)
+            cfl = global_reduce(vol_max_loc(ts_field), op="max", comm=comm)
 
         return ts_field, cfl, min(t_remaining, dt)
 
