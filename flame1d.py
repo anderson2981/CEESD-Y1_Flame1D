@@ -629,7 +629,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             health_error = True
             logger.info(f"{rank=}: Pressure range violation ({health_pres_min},"
                         f"{health_pres_max}).")
-            max_pressure = actx.to_numpy(discr.norm(dv.pressure, np.inf))
+            max_pressure = actx.to_numpy(discr.norm(dv.pressure, np.inf))[()]
             logger.info(f"{rank=}: {max_pressure=}")
 
         if check_naninf_local(discr, "vol", temperature):
