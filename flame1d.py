@@ -39,7 +39,7 @@ from functools import partial
 from arraycontext import thaw, freeze
 from meshmode.array_context import (
     PyOpenCLArrayContext,
-    SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
+    FusionContractorArrayContext as PytatoPyOpenCLArrayContext
 )
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
