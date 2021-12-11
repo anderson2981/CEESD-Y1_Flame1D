@@ -100,7 +100,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
          user_input_file=None, restart_file=None, use_profiling=False,
          use_logmgr=False, use_lazy_eval=False, log_dependent=1):
     """Drive the 1D Flame example."""
-
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = 0
@@ -470,6 +469,20 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                                   mpi_communicator=comm)
     nodes = thaw(discr.nodes(), actx)
 
+    def get_fluid_state(cv, temperature_seed):
+        return make_fluid_state(cv=cv, gas_model=gas_model,
+                                temperature_seed=temperature_seed)
+
+    def get_temperature_update(cv, temperature):
+        y = cv.species_mass_fractions
+        e = eos.internal_energy(cv) / cv.mass
+        return make_obj_array(
+            [pyrometheus_mechanism.get_temperature_update_energy(e, temperature, y)]
+        )
+
+    compute_temperature_update = actx.compile(get_temperature_update)
+    create_fluid_state = actx.compile(get_fluid_state)
+
     temperature_seed = can_t
 
     if restart_file is None:
@@ -504,7 +517,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         if logmgr:
             logmgr_set_time(logmgr, current_step, current_t)
 
-    current_state = make_fluid_state(current_cv, gas_model, temperature_seed)
+    current_state = create_fluid_state(current_cv, temperature_seed)
     temperature_seed = current_state.temperature
 
     vis_timer = None
@@ -591,8 +604,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     compute_cfl = actx.compile(get_cfl)
 
-    def get_production_rates(cv):
-        return make_obj_array([eos.get_production_rates(cv)])
+    def get_production_rates(cv, temperature):
+        return make_obj_array([eos.get_production_rates(cv, temperature)])
 
     compute_production_rates = actx.compile(get_production_rates)
 
@@ -613,7 +626,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         return actx.to_numpy(nodal_max(discr, "vol", x))[()]
 
     def my_write_viz(step, t, dt, cv, dv, ts_field):
-        reaction_rates, = compute_production_rates(cv)
+        reaction_rates, = compute_production_rates(cv, dv.temperature)
         viz_fields = [("CV_rho", cv.mass),
                       ("CV_rhoU", cv.momentum[0]),
                       ("CV_rhoV", cv.momentum[1]),
@@ -799,7 +812,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         cv_rhs = (
             ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
                         gas_model=gas_model) +
-            eos.get_species_source_terms(cv=cv)
+            eos.get_species_source_terms(cv=cv, temperature=fluid_state.temperature)
         )
         return make_obj_array([cv_rhs, 0*tseed])
 
