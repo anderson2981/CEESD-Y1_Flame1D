@@ -36,15 +36,17 @@ import numpy.linalg as la  # noqa
 import pyopencl.array as cla  # noqa
 from functools import partial
 
-from meshmode.dof_array import thaw
-from meshmode.array_context import PyOpenCLArrayContext
+from arraycontext import thaw, freeze
+from meshmode.array_context import (
+    PyOpenCLArrayContext,
+    SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
+)
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
 from mirgecom.profiling import PyOpenCLProfilingArrayContext
-
 from mirgecom.navierstokes import ns_operator
 from mirgecom.simutil import (
     check_step,
@@ -52,7 +54,8 @@ from mirgecom.simutil import (
     generate_and_distribute_mesh,
     write_visfile,
     check_naninf_local,
-    check_range_local
+    check_range_local,
+    global_reduce
 )
 from mirgecom.restart import (
     write_restart_file
@@ -68,18 +71,12 @@ from mirgecom.integrators import (
     euler_step
 )
 from mirgecom.steppers import advance_state
-from mirgecom.boundary import (
-    PrescribedViscousBoundary
-)
+from mirgecom.boundary import PrescribedInviscidBoundary
 from mirgecom.fluid import make_conserved
-from mirgecom.initializers import (
-    PlanarDiscontinuity,
-    MixtureInitializer
-)
+from mirgecom.initializers import PlanarDiscontinuity
 from mirgecom.transport import SimpleTransport
 from mirgecom.eos import PyrometheusMixture
 import cantera
-import pyrometheus as pyro
 
 from logpyle import IntervalTimer, set_dt
 from mirgecom.euler import extract_vars_for_logging, units_for_logging
@@ -100,7 +97,7 @@ class MyRuntimeError(RuntimeError):
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context, casename="flame1d",
          user_input_file=None, restart_file=None, use_profiling=False,
-         use_logmgr=False, use_lazy_eval=False):
+         use_logmgr=False, use_lazy_eval=False, log_dependent=1):
     """Drive the 1D Flame example."""
 
     from mpi4py import MPI
@@ -116,7 +113,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
                                mode="wo", mpi_comm=comm)
-
     cl_ctx = ctx_factory()
     if use_profiling:
         if use_lazy_eval:
@@ -129,8 +125,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     else:
         queue = cl.CommandQueue(cl_ctx)
         if use_lazy_eval:
-            from meshmode.array_context import PytatoPyOpenCLArrayContext
             actx = PytatoPyOpenCLArrayContext(queue)
+            log_dependent = 0
         else:
             actx = PyOpenCLArrayContext(queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
@@ -151,7 +147,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     health_pres_max = 2.0e6
     health_mass_frac_min = -1.0e-9
     health_mass_frac_max = 1.0 + 1.e-9
-
+    health_temp_min = 1.0
+    health_temp_max = 3000.0
     # discretization and model control
     order = 1
     char_len = 0.0001
@@ -219,6 +216,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             pass
         try:
             health_mass_frac_max = float(input_data["health_mass_frac_max"])
+        except KeyError:
+            pass
+        try:
+            log_dependent = int(input_data["logDependent"])
         except KeyError:
             pass
 
@@ -323,7 +324,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
     pres_burned = cantera_soln.P
 
-    pyrometheus_mechanism = pyro.get_thermochem_class(cantera_soln)(actx.np)
+    from mirgecom.thermochemistry import make_pyrometheus_mechanism
+    pyrometheus_mechanism = make_pyrometheus_mechanism(actx, cantera_soln)
 
     kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
     mu = 1.e-5
@@ -354,56 +356,55 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                                     velocity_left=vel_unburned,
                                     species_mass_right=y_burned,
                                     species_mass_left=y_unburned)
-    inflow_init = MixtureInitializer(dim=dim,
-                                     nspecies=nspecies,
-                                     pressure=pres_burned,
-                                     temperature=temp_ignition,
-                                     massfractions=y_burned,
-                                     velocity=vel_burned)
-    outflow_init = MixtureInitializer(dim=dim,
-                                      nspecies=nspecies,
-                                      pressure=pres_unburned,
-                                      temperature=temp_unburned,
-                                      massfractions=y_unburned,
-                                      velocity=vel_unburned)
 
-    def symmetry(nodes, eos, cv=None, **kwargs):
+    def symmetry(nodes, eos, cv, **kwargs):
         dim = len(nodes)
+        momentum = 1.0*cv.momentum
+        momentum[1] = -momentum[1]
+        return make_conserved(dim=dim, mass=cv.mass, momentum=momentum,
+                              energy=cv.energy, species_mass=cv.species_mass)
 
-        if cv is not None:
-            mass = cv.mass
-            momentum = cv.momentum
-            momentum[1] = -1.0 * momentum[1]
-            energy = cv.energy
-            species_mass = cv.species_mass
-            return make_conserved(dim=dim,
-                                  mass=mass,
-                                  momentum=momentum,
-                                  energy=energy,
-                                  species_mass=species_mass)
+    def dummy(nodes, eos, cv, **kwargs):
+        return 1.0*cv
 
-    def dummy(nodes, eos, cv=None, **kwargs):
-        dim = len(nodes)
+    def _flow_bnd(nodes, cv, eos, flow_vel, flow_pres, flow_temp, flow_spec,
+                  **kwargs):
+        ones = 0*cv.mass + 1.0
+        pressure = flow_pres * ones
+        temperature = flow_temp * ones
+        velocity = 0*cv.velocity + flow_vel
+        y = make_obj_array([flow_spec[i] * ones
+                            for i in range(nspecies)])
 
-        if cv is not None:
-            mass = cv.mass
-            momentum = cv.momentum
-            energy = cv.energy
-            species_mass = cv.species_mass
-            return make_conserved(dim=dim,
-                                  mass=mass,
-                                  momentum=momentum,
-                                  energy=energy,
-                                  species_mass=species_mass)
+        mass = eos.get_density(pressure, temperature, y)
+        specmass = mass * y
+        mom = mass * velocity
+        internal_energy = eos.get_internal_energy(temperature=temperature,
+                                                   species_mass_fractions=y)
+        kinetic_energy = 0.5 * np.dot(velocity, velocity)
+        energy = mass * (internal_energy + kinetic_energy)
 
-    inflow = PrescribedViscousBoundary(q_func=inflow_init)
-    outflow = PrescribedViscousBoundary(q_func=outflow_init)
-    wall_symmetry = PrescribedViscousBoundary(q_func=symmetry)
+        return make_conserved(dim=cv.dim, mass=mass, energy=energy,
+                              momentum=mom, species_mass=specmass)
 
-    boundaries = {DTAG_BOUNDARY("Inflow"): inflow,
-                  DTAG_BOUNDARY("Outflow"): outflow,
-                  #DTAG_BOUNDARY("Wall"): wall}
-                  #DTAG_BOUNDARY("Wall"): wall_dummy}
+    def inflow_func(nodes, cv, eos, **kwargs):
+        return _flow_bnd(nodes, cv, eos, flow_vel=vel_burned,
+                        flow_pres=pres_burned, flow_temp=temp_ignition,
+                        flow_spec=y_burned, **kwargs)
+
+    def outflow_func(nodes, cv, eos, **kwargs):
+        return _flow_bnd(nodes, cv, eos, flow_vel=vel_unburned,
+                        flow_pres=pres_unburned, flow_temp=temp_unburned,
+                        flow_spec=y_unburned, **kwargs)
+
+    wall_symmetry = PrescribedInviscidBoundary(fluid_solution_func=symmetry)
+    inflow_boundary = \
+        PrescribedInviscidBoundary(fluid_solution_func=inflow_func)
+    outflow_boundary = \
+        PrescribedInviscidBoundary(fluid_solution_func=outflow_func)
+
+    boundaries = {DTAG_BOUNDARY("Inflow"): inflow_boundary,
+                  DTAG_BOUNDARY("Outflow"): outflow_boundary,
                   DTAG_BOUNDARY("Wall"): wall_symmetry}
 
     restart_step = None
@@ -443,7 +444,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                                   local_mesh,
                                   order=order,
                                   mpi_communicator=comm)
-    nodes = thaw(actx, discr.nodes())
+    nodes = thaw(discr.nodes(), actx)
 
     if restart_file is None:
         if rank == 0:
@@ -482,27 +483,32 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
-        logmgr_add_many_discretization_quantities(logmgr, discr, dim,
-            extract_vars_for_logging, units_for_logging)
         logmgr_set_time(logmgr, current_step, current_t)
-        logmgr.add_quantity(log_cfl, interval=nstatus)
         #logmgr_add_package_versions(logmgr)
 
         logmgr.add_watches([
             ("step.max", "step = {value}, "),
             ("t_sim.max", "sim time: {value:1.6e} s, "),
-            ("cfl.max", "cfl = {value:1.4f}\n"),
-            ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
-            ("max_pressure",    "{value:1.9e})\n"),
-            ("min_temperature", "------- T (min, max) (K)  = ({value:5g}, "),
-            ("max_temperature",    "{value:7g})\n"),
             ("t_step.max", "------- step walltime: {value:6g} s, "),
-            ("t_log.max", "log walltime: {value:6g} s")])
+            ("t_log.max", "log walltime: {value:6g} s\n")])
 
         try:
             logmgr.add_watches(["memory_usage.max"])
         except KeyError:
             pass
+
+        if log_dependent:
+            logmgr_add_many_discretization_quantities(logmgr, discr, dim,
+                                                      extract_vars_for_logging,
+                                                      units_for_logging)
+            logmgr.add_quantity(log_cfl, interval=nstatus)
+            logmgr.add_watches([
+                ("cfl.max", "cfl = {value:1.4f}\n"),
+                ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
+                ("max_pressure", "{value:1.9e})\n"),
+                ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
+                ("max_temperature", "{value:7g})\n"),
+            ])
 
         if use_profiling:
             logmgr.add_watches(["pyopencl_array_time.max"])
@@ -526,12 +532,59 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     if rank == 0:
         logger.info(init_message)
 
+    from pytools.obj_array import make_obj_array
+
+    def get_temperature_mass_energy(state, temperature):
+        y = state.species_mass_fractions
+        e = eos.internal_energy(state) / state.mass
+        return make_obj_array(
+            [pyrometheus_mechanism.get_temperature(e, temperature, y)]
+        )
+
+    compute_dependent_vars = actx.compile(eos.dependent_vars)
+    compute_temperature = actx.compile(get_temperature_mass_energy)
+
+    from mirgecom.viscous import get_viscous_timestep
+
+    def get_dt(state):
+        return make_obj_array([get_viscous_timestep(discr, eos=eos, cv=state)])
+
+    compute_dt = actx.compile(get_dt)
+
+    from mirgecom.viscous import get_viscous_cfl
+
+    def get_cfl(state, dt):
+        return make_obj_array([get_viscous_cfl(discr, eos, dt, cv=state)])
+
+    compute_cfl = actx.compile(get_cfl)
+
+    def get_production_rates(state):
+        return make_obj_array([eos.get_production_rates(state)])
+
+    compute_production_rates = actx.compile(get_production_rates)
+
+    def vol_min_loc(x):
+        from grudge.op import nodal_min_loc
+        return actx.to_numpy(nodal_min_loc(discr, "vol", x))[()]
+
+    def vol_max_loc(x):
+        from grudge.op import nodal_max_loc
+        return actx.to_numpy(nodal_max_loc(discr, "vol", x))[()]
+
+    def vol_min(x):
+        from grudge.op import nodal_min
+        return actx.to_numpy(nodal_min(discr, "vol", x))[()]
+
+    def vol_max(x):
+        from grudge.op import nodal_max
+        return actx.to_numpy(nodal_max(discr, "vol", x))[()]
+
     def my_write_viz(step, t, dt, state, dv=None,
                      reaction_rates=None, ts_field=None):
         if dv is None:
-            dv = eos.dependent_vars(state)
+            dv = compute_dependent_vars(state)
         if reaction_rates is None:
-            reaction_rates = eos.get_production_rates(state)
+            reaction_rates, = compute_production_rates(state)
         if ts_field is None:
             ts_field, cfl, dt = my_get_timestep(t, dt, state)
         viz_fields = [("CV_rho", state.mass),
@@ -564,14 +617,29 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     def my_health_check(state, dv):
         health_error = False
-        if check_naninf_local(discr, "vol", dv.pressure):
+        pressure = thaw(freeze(dv.pressure, actx), actx)
+        temperature = thaw(freeze(dv.temperature, actx), actx)
+
+        if check_naninf_local(discr, "vol", pressure):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if check_range_local(discr, "vol", dv.pressure, health_pres_min,
+        if check_range_local(discr, "vol", pressure, health_pres_min,
                              health_pres_max):
             health_error = True
-            logger.info(f"{rank=}: Pressure range violation.")
+            logger.info(f"{rank=}: Pressure range violation ({health_pres_min},"
+                        f"{health_pres_max}).")
+            max_pressure = actx.to_numpy(discr.norm(dv.pressure, np.inf))[()]
+            logger.info(f"{rank=}: {max_pressure=}")
+
+        if check_naninf_local(discr, "vol", temperature):
+            health_error = True
+            logger.info(f"{rank=}: NANs/Infs in temperature data.")
+
+        if check_range_local(discr, "vol", temperature, health_temp_min,
+                             health_temp_max):
+            health_error = True
+            logger.info(f"{rank=}: Temperature range violation.")
 
         for i in range(nspecies):
             if check_range_local(discr, "vol", state.species_mass[i]/state.mass,
@@ -579,56 +647,70 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                 health_error = True
                 logger.info(f"{rank=}: species mass fraction range violation.")
 
+        # This check is the temperature convergence check
+        # The current *temperature* is what Pyrometheus gets
+        # after a fixed number of Newton iterations, *n_iter*.
+        # Calling `compute_temperature` here with *temperature*
+        # input as the guess returns the calculated gas temperature after
+        # yet another *n_iter*.
+        # The difference between those two temperatures is the
+        # temperature residual, which can be used as an indicator of
+        # convergence in Pyrometheus `get_temperature`.
+        # Note: The local max jig below works around a very long compile
+        # in lazy mode.
+        check_temp, = compute_temperature(state, temperature)
+        check_temp = thaw(freeze(check_temp, actx), actx)
+        temp_resid = actx.np.abs(check_temp - temperature)
+        temp_resid = vol_max_loc(temp_resid)
+        if temp_resid > 1e-8:
+            health_error = True
+            logger.info(f"{rank=}: Temperature is not converged {temp_resid=}.")
+
         return health_error
 
     def my_health_report(state, dv):
         logger.info("Simulation global status report.")
-        from grudge.op import nodal_max, nodal_min
-        p_min = nodal_min(discr, "vol", dv.pressure)
-        p_max = nodal_max(discr, "vol", dv.pressure)
-        temp_min = nodal_min(discr, "vol", dv.temperature)
-        temp_max = nodal_max(discr, "vol", dv.temperature)
-        rho_min = nodal_min(discr, "vol", state.mass)
-        rho_max = nodal_max(discr, "vol", state.mass)
+        pressure = thaw(freeze(dv.pressure, actx), actx)
+        temperature = thaw(freeze(dv.temperature, actx), actx)
+        p_min = vol_min(pressure)
+        p_max = vol_max(pressure)
+        temp_min = vol_min(temperature)
+        temp_max = vol_max(temperature)
+        rho_min = vol_min(state.mass)
+        rho_max = vol_max(state.mass)
         from pytools.obj_array import obj_array_vectorize
-        vel_min = obj_array_vectorize(lambda x: nodal_min(discr, "vol", x),
+        vel_min = obj_array_vectorize(lambda x: vol_min(x),
                                       state.momentum/state.mass)
-        vel_max = obj_array_vectorize(lambda x: nodal_max(discr, "vol", x),
+        vel_max = obj_array_vectorize(lambda x: vol_max(x),
                                       state.momentum/state.mass)
-        y_min = obj_array_vectorize(lambda x: nodal_min(discr, "vol", x),
+        y_min = obj_array_vectorize(lambda x: vol_min(x),
                                       state.species_mass/state.mass)
-        y_max = obj_array_vectorize(lambda x: nodal_max(discr, "vol", x),
+        y_max = obj_array_vectorize(lambda x: vol_max(x),
                                       state.species_mass/state.mass)
-        energy_min = nodal_min(discr, "vol", state.energy)
-        energy_max = nodal_max(discr, "vol", state.energy)
+        energy_min = vol_min(state.energy)
+        energy_max = vol_max(state.energy)
 
         logger.info(f" ---- Density range ({rho_min: 1.5e}, {rho_max: 1.5e})")
         for i in range(dim):
-            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e}, {vel_max[i]: 1.5e})")
+            logger.info(f" ---- Velocity range [{i}] ({vel_min[i]: 1.5e},"
+                        f" {vel_max[i]: 1.5e})")
         logger.info(f" ---- Energy range ({energy_min: 1.9e}, {energy_max: 1.9e})")
         for i in range(nspecies):
-            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e}, {y_max[i]: 1.5e}) ({species_names[i]})")
+            logger.info(f" ---- Mass fraction range [{i}] ({y_min[i]: 1.5e},"
+                        f" {y_max[i]: 1.5e}) ({species_names[i]})")
         logger.info(f" ---- Pressure range ({p_min: 1.9e}, {p_max: 1.9e})")
         logger.info(f" ---- Temperature range ({temp_min: 5g}, {temp_max: 5g})")
-
-        ##for i in range(nspecies))
-        #if check_range_local(discr, "vol", state.species_mass[0]/state.mass, 0., 1.0):
-            #health_error = True
-            #logger.info(f"{rank=}: species mass fraction range violation.")
 
     def my_get_timestep(t, dt, state):
         t_remaining = max(0, t_final - t)
         if constant_cfl:
-            from mirgecom.viscous import get_viscous_timestep
-            ts_field = current_cfl * get_viscous_timestep(discr, eos=eos, cv=state)
-            from grudge.op import nodal_min
-            dt = nodal_min(discr, "vol", ts_field)
             cfl = current_cfl
+            ts_field = cfl * compute_dt(state)[0]
+            ts_field = thaw(freeze(ts_field, actx), actx)
+            dt = global_reduce(vol_min_loc(ts_field), op="min", comm=comm)
         else:
-            from mirgecom.viscous import get_viscous_cfl
-            ts_field = get_viscous_cfl(discr, eos=eos, dt=dt, cv=state)
-            from grudge.op import nodal_max
-            cfl = nodal_max(discr, "vol", ts_field)
+            ts_field = compute_cfl(state, current_dt)[0]
+            cfl = global_reduce(vol_max_loc(ts_field), op="max", comm=comm)
 
         return ts_field, cfl, min(t_remaining, dt)
 
@@ -647,14 +729,14 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             do_health = check_step(step=step, interval=nhealth)
 
             if do_health:
-                dv = eos.dependent_vars(state)
+                dv = compute_dependent_vars(state)
                 from mirgecom.simutil import allsync
                 health_errors = allsync(my_health_check(state, dv), comm,
                                         op=MPI.LOR)
                 if health_errors:
                     if rank == 0:
                         logger.info("Fluid solution failed health check.")
-                    my_health_report(state, dv)
+                    # my_health_report(state, dv)
                     raise MyRuntimeError("Failed simulation health check.")
 
             if do_restart:
@@ -662,7 +744,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
             if do_viz:
                 if dv is None:
-                    dv = eos.dependent_vars(state)
+                    dv = compute_dependent_vars(state)
                 my_write_viz(step=step, t=t, dt=dt, state=state, dv=dv)
 
         except MyRuntimeError:
@@ -707,7 +789,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     # Dump the final data
     if rank == 0:
         logger.info("Checkpointing final state ...")
-    final_dv = eos.dependent_vars(current_state)
+    final_dv = compute_dependent_vars(current_state)
     my_write_viz(step=current_step, t=current_t, dt=current_dt, state=current_state,
                  dv=final_dv)
     my_write_restart(step=current_step, t=current_t, state=current_state)
