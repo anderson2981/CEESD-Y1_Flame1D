@@ -894,6 +894,11 @@ if __name__ == "__main__":
     else:
         print("No user input file, using default values")
 
+    from warnings import warn
+    warn("Automatically turning off DV logging. MIRGE-Com Issue(578)")
+    log_dependent = 0
+
     print(f"Running {sys.argv[0]}\n")
     main(restart_file=restart_file, user_input_file=input_file,
-         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)
+         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log,
+         log_dependent=log_dependent)
