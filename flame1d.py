@@ -130,6 +130,9 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     rank = comm.Get_rank()
     nparts = comm.Get_size()
 
+    from mirgecom.simutil import global_reduce as _global_reduce
+    global_reduce = partial(_global_reduce, comm=comm)
+
     restart_path = "restart_data/"
     viz_path = "viz_data/"
     vizname = viz_path+casename
@@ -343,8 +346,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     temp_burned, rho_burned, y_burned = cantera_soln.TDY
     pres_burned = cantera_soln.P
 
-    from mirgecom.thermochemistry import make_pyrometheus_mechanism
-    pyrometheus_mechanism = make_pyrometheus_mechanism(actx, cantera_soln)
+    from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
+    pyrometheus_mechanism = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
 
     kappa = 1.3e-2  # Pr = mu*cp/kappa = 0.75
     mu = 1.e-5
@@ -668,30 +671,35 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         pressure = thaw(freeze(dv.pressure, actx), actx)
         temperature = thaw(freeze(dv.temperature, actx), actx)
 
-        if check_naninf_local(discr, "vol", pressure):
+        if global_reduce(check_naninf_local(discr, "vol", pressure), op="lor"):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if check_range_local(discr, "vol", pressure, health_pres_min,
-                             health_pres_max):
+        if global_reduce(check_range_local(discr, "vol", pressure,
+                                           health_pres_min, health_pres_max),
+                         op="lor"):
             health_error = True
             logger.info(f"{rank=}: Pressure range violation ({health_pres_min},"
                         f"{health_pres_max}).")
             max_pressure = actx.to_numpy(discr.norm(dv.pressure, np.inf))[()]
             logger.info(f"{rank=}: {max_pressure=}")
 
-        if check_naninf_local(discr, "vol", temperature):
+        if global_reduce(check_naninf_local(discr, "vol", temperature), op="lor"):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in temperature data.")
 
-        if check_range_local(discr, "vol", temperature, health_temp_min,
-                             health_temp_max):
+        if global_reduce(check_range_local(discr, "vol", temperature,
+                                           health_temp_min, health_temp_max),
+                         op="lor"):
             health_error = True
             logger.info(f"{rank=}: Temperature range violation.")
 
         for i in range(nspecies):
-            if check_range_local(discr, "vol", cv.species_mass_fractions[i],
-                                 health_mass_frac_min, health_mass_frac_max):
+            if global_reduce(check_range_local(discr, "vol",
+                                               cv.species_mass_fractions[i],
+                                               health_mass_frac_min,
+                                               health_mass_frac_max),
+                             op="lor"):
                 health_error = True
                 logger.info(f"{rank=}: species mass fraction range violation.")
 
@@ -775,9 +783,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             do_health = check_step(step=step, interval=nhealth)
 
             if do_health:
-                from mirgecom.simutil import allsync
-                health_errors = allsync(my_health_check(cv, dv), comm,
-                                        op=MPI.LOR)
+                health_errors = global_reduce(my_health_check(cv, dv), op="lor")
                 if health_errors:
                     if rank == 0:
                         logger.info("Fluid solution failed health check.")
@@ -900,11 +906,6 @@ if __name__ == "__main__":
     else:
         print("No user input file, using default values")
 
-    from warnings import warn
-    warn("Automatically turning off DV logging. MIRGE-Com Issue(578)")
-    log_dependent = 0
-
     print(f"Running {sys.argv[0]}\n")
     main(restart_file=restart_file, user_input_file=input_file,
-         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log,
-         log_dependent=log_dependent)
+         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)

@@ -6,7 +6,7 @@ current_dt: 1.e-9
 t_final: 1.e-3
 #t_final: 5.0e-10
 order:  2
-integrator: rk4
+integrator: euler
 health_pres_min: 10
 health_pres_max: 2.e6
 health_temp_min: 1
