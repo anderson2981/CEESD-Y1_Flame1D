@@ -30,6 +30,7 @@ THE SOFTWARE.
 """
 import yaml
 import logging
+import sys
 import numpy as np
 import pyopencl as cl
 import numpy.linalg as la  # noqa
@@ -80,13 +81,36 @@ from mirgecom.gas_model import GasModel, make_fluid_state
 import cantera
 
 from logpyle import IntervalTimer, set_dt
-from mirgecom.euler import extract_vars_for_logging, units_for_logging
 from mirgecom.logging_quantities import (
-    initialize_logmgr, logmgr_add_many_discretization_quantities,
+    initialize_logmgr,
     logmgr_add_cl_device_info, logmgr_set_time, LogUserQuantity,
     set_sim_state
 )
+
+
+class SingleLevelFilter(logging.Filter):
+    def __init__(self, passlevel, reject):
+        self.passlevel = passlevel
+        self.reject = reject
+
+    def filter(self, record):
+        if self.reject:
+            return (record.levelno != self.passlevel)
+        else:
+            return (record.levelno == self.passlevel)
+
+
+h1 = logging.StreamHandler(sys.stdout)
+f1 = SingleLevelFilter(logging.INFO, False)
+h1.addFilter(f1)
+root_logger = logging.getLogger()
+root_logger.addHandler(h1)
+h2 = logging.StreamHandler(sys.stderr)
+f2 = SingleLevelFilter(logging.INFO, True)
+h2.addFilter(f2)
+root_logger.addHandler(h2)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class MyRuntimeError(RuntimeError):
@@ -98,7 +122,7 @@ class MyRuntimeError(RuntimeError):
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context, casename="flame1d",
          user_input_file=None, restart_file=None, use_profiling=False,
-         use_logmgr=False, use_lazy_eval=False, log_dependent=1):
+         use_logmgr=False, use_lazy_eval=False):
     """Drive the 1D Flame example."""
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
@@ -126,7 +150,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         queue = cl.CommandQueue(cl_ctx)
         if use_lazy_eval:
             actx = PytatoPyOpenCLArrayContext(queue)
-            log_dependent = 0
         else:
             actx = PyOpenCLArrayContext(queue,
                 allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
@@ -216,10 +239,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             pass
         try:
             health_mass_frac_max = float(input_data["health_mass_frac_max"])
-        except KeyError:
-            pass
-        try:
-            log_dependent = int(input_data["logDependent"])
         except KeyError:
             pass
 
@@ -327,7 +346,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     from mirgecom.thermochemistry import make_pyrometheus_mechanism
     pyrometheus_mechanism = make_pyrometheus_mechanism(actx, cantera_soln)
 
-    kappa = 1.6e-5  # Pr = mu*rho/alpha = 0.75
+    kappa = 1.3e-2  # Pr = mu*cp/kappa = 0.75
     mu = 1.e-5
     species_diffusivity = 1.e-5 * np.ones(nspecies)
     transport_model = SimpleTransport(viscosity=mu, thermal_conductivity=kappa,
@@ -538,19 +557,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             logmgr.add_watches(["memory_usage.max"])
         except KeyError:
             pass
-
-        if log_dependent:
-            logmgr_add_many_discretization_quantities(logmgr, discr, dim,
-                                                      extract_vars_for_logging,
-                                                      units_for_logging)
-            logmgr.add_quantity(log_cfl, interval=nstatus)
-            logmgr.add_watches([
-                ("cfl.max", "cfl = {value:1.4f}\n"),
-                ("min_pressure", "------- P (min, max) (Pa) = ({value:1.9e}, "),
-                ("max_pressure", "{value:1.9e})\n"),
-                ("min_temperature", "------- T (min, max) (K)  = ({value:7g}, "),
-                ("max_temperature", "{value:7g})\n"),
-            ])
 
         if use_profiling:
             logmgr.add_watches(["pyopencl_array_time.max"])
