@@ -38,16 +38,11 @@ import pyopencl.array as cla  # noqa
 from functools import partial
 
 from arraycontext import thaw, freeze
-from meshmode.array_context import (
-    PyOpenCLArrayContext,
-    SingleGridWorkBalancingPytatoArrayContext as PytatoPyOpenCLArrayContext
-)
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
-from mirgecom.profiling import PyOpenCLProfilingArrayContext
 from mirgecom.navierstokes import ns_operator
 from mirgecom.simutil import (
     check_step,
@@ -122,8 +117,11 @@ class MyRuntimeError(RuntimeError):
 @mpi_entry_point
 def main(ctx_factory=cl.create_some_context, casename="flame1d",
          user_input_file=None, restart_file=None, use_profiling=False,
-         use_logmgr=False, use_lazy_eval=False):
+         use_logmgr=False, use_lazy_eval=False, actx_class=None):
     """Drive the 1D Flame example."""
+    if actx_class is None:
+        raise RuntimeError("Array context class missing.")
+
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = 0
@@ -142,20 +140,17 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                                mode="wo", mpi_comm=comm)
     cl_ctx = ctx_factory()
     if use_profiling:
-        if use_lazy_eval:
-            raise RuntimeError("Cannot run lazy with profiling.")
         queue = cl.CommandQueue(cl_ctx,
             properties=cl.command_queue_properties.PROFILING_ENABLE)
-        actx = PyOpenCLProfilingArrayContext(queue,
-            allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
-            logmgr=logmgr)
     else:
         queue = cl.CommandQueue(cl_ctx)
-        if use_lazy_eval:
-            actx = PytatoPyOpenCLArrayContext(queue)
-        else:
-            actx = PyOpenCLArrayContext(queue,
-                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)))
+
+    if use_lazy_eval:
+        actx = actx_class(comm, queue, mpi_base_tag=12000)
+    else:
+        actx = actx_class(comm, queue,
+                allocator=cl_tools.MemoryPool(cl_tools.ImmediateAllocator(queue)),
+                force_device_scalars=True)
 
     # default i/o frequencies
     nviz = 100
@@ -885,6 +880,13 @@ if __name__ == "__main__":
         help="enable lazy evaluation [OFF]")
 
     args = parser.parse_args()
+    lazy = args.lazy
+    if args.profile:
+        if lazy:
+            raise ValueError("Can't use lazy and profiling together.")
+
+    from grudge.array_context import get_reasonable_array_context_class
+    actx_class = get_reasonable_array_context_class(lazy=lazy, distributed=True)
 
     # for writing output
     casename = "flame1d"
@@ -907,5 +909,7 @@ if __name__ == "__main__":
         print("No user input file, using default values")
 
     print(f"Running {sys.argv[0]}\n")
+
     main(restart_file=restart_file, user_input_file=input_file,
-         use_profiling=args.profile, use_lazy_eval=args.lazy, use_logmgr=args.log)
+         actx_class=actx_class, use_profiling=args.profile,
+         use_lazy_eval=lazy, use_logmgr=args.log)
