@@ -138,8 +138,19 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     vizname = viz_path+casename
     snapshot_pattern = restart_path+"{cname}-{step:06d}-{rank:04d}.pkl"
 
-    logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
-                               mode="wo", mpi_comm=comm)
+    # logging and profiling
+    log_path = "log_data/"
+    logname = log_path + casename + ".sqlite"
+
+    if rank == 0:
+        import os
+        log_dir = os.path.dirname(logname)
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+
+    logmgr = initialize_logmgr(use_logmgr,
+        filename=logname, mode="wo", mpi_comm=comm)
+
     cl_ctx = ctx_factory()
     if use_profiling:
         if use_lazy_eval:
