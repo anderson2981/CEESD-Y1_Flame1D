@@ -104,6 +104,7 @@ h2 = logging.StreamHandler(sys.stderr)
 f2 = SingleLevelFilter(logging.INFO, True)
 h2.addFilter(f2)
 root_logger.addHandler(h2)
+root_logger.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
