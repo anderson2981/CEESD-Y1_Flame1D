@@ -303,7 +303,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     if fuel == "C2H4":
         mech_config = get_mechanism_config("uiuc")
     elif fuel == "H2":
-        mech_config = get_mechanism_config("sanDiego")
+        mech_config = get_mechanism_config("sandiego")
 
     cantera_soln = cantera.Solution(name="gas", yaml=mech_config)
     nspecies = cantera_soln.n_species
