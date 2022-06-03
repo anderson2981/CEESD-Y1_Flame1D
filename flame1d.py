@@ -51,7 +51,6 @@ from mirgecom.simutil import (
     write_visfile,
     check_naninf_local,
     check_range_local,
-    global_reduce
 )
 from mirgecom.restart import (
     write_restart_file
@@ -300,14 +299,13 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     # --- Note: Users may add their own CTI file by dropping it into
     # ---       mirgecom/mechanisms alongside the other CTI files.
 
-    from mirgecom.mechanisms import get_mechanism_cti
+    from mirgecom.mechanisms import get_mechanism_config
     if fuel == "C2H4":
-        mech_cti = get_mechanism_cti("uiuc")
+        mech_config = get_mechanism_config("uiuc")
     elif fuel == "H2":
-        mech_cti = get_mechanism_cti("sanDiego")
-        # mech_cti = get_mechanism_cti("sanDiego_trans")
+        mech_config = get_mechanism_config("sanDiego")
 
-    cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
+    cantera_soln = cantera.Solution(name="gas", yaml=mech_config)
     nspecies = cantera_soln.n_species
 
     # Initial temperature, pressure, and mixutre mole fractions are needed to
