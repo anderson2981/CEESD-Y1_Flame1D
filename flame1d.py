@@ -426,26 +426,26 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                         flow_pres=pres_unburned, flow_temp=temp_unburned,
                         flow_spec=y_unburned, **kwargs)
 
-    def _boundary_state_func(discr, btag, gas_model, state_minus, init_func,
+    def _boundary_state_func(dcoll, btag, gas_model, state_minus, init_func,
                              **kwargs):
         actx = state_minus.array_context
-        bnd_discr = discr.discr_from_dd(btag)
+        bnd_discr = dcoll.discr_from_dd(btag)
         nodes = thaw(bnd_discr.nodes(), actx)
         return make_fluid_state(init_func(nodes=nodes, eos=gas_model.eos,
                                           cv=state_minus.cv, **kwargs),
                                 gas_model=gas_model,
                                 temperature_seed=state_minus.temperature)
 
-    def _inflow_boundary_state(discr, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(discr, btag, gas_model, state_minus,
+    def _inflow_boundary_state(dcoll, btag, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, btag, gas_model, state_minus,
                                     _inflow_func, **kwargs)
 
-    def _outflow_boundary_state(discr, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(discr, btag, gas_model, state_minus,
+    def _outflow_boundary_state(dcoll, btag, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, btag, gas_model, state_minus,
                                     _outflow_func, **kwargs)
 
-    def _symmetry_boundary_state(discr, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(discr, btag, gas_model, state_minus,
+    def _symmetry_boundary_state(dcoll, btag, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, btag, gas_model, state_minus,
                                     _symmetry_func, **kwargs)
 
     wall_symmetry = \
@@ -492,11 +492,11 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     if rank == 0:
         logging.info("Making discretization")
-    discr = EagerDGDiscretization(actx,
+    dcoll = EagerDGDiscretization(actx,
                                   local_mesh,
                                   order=order,
                                   mpi_communicator=comm)
-    nodes = thaw(discr.nodes(), actx)
+    nodes = thaw(dcoll.nodes(), actx)
 
     def get_fluid_state(cv, temperature_seed):
         return make_fluid_state(cv=cv, gas_model=gas_model,
@@ -526,7 +526,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         current_step = restart_step
 
         if restart_order != order:
-            restart_discr = EagerDGDiscretization(
+            restart_dcoll = EagerDGDiscretization(
                 actx,
                 local_mesh,
                 order=restart_order,
@@ -534,8 +534,8 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
             from meshmode.discretization.connection import make_same_mesh_connection
             connection = make_same_mesh_connection(
                 actx,
-                discr.discr_from_dd("vol"),
-                restart_discr.discr_from_dd("vol"))
+                dcoll.discr_from_dd("vol"),
+                restart_dcoll.discr_from_dd("vol"))
 
             current_cv = connection(restart_data["cv"])
             temperature_seed = connection(restart_data["temperature_seed"])
@@ -574,7 +574,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     initname = "flame1d"
     eosname = eos.__class__.__name__
@@ -609,14 +609,14 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     from mirgecom.viscous import get_viscous_timestep
 
     def get_dt(state):
-        return make_obj_array([get_viscous_timestep(discr, state=state)])
+        return make_obj_array([get_viscous_timestep(dcoll, state=state)])
 
     compute_dt = actx.compile(get_dt)
 
     from mirgecom.viscous import get_viscous_cfl
 
     def get_cfl(state, dt):
-        return make_obj_array([get_viscous_cfl(discr, dt, state=state)])
+        return make_obj_array([get_viscous_cfl(dcoll, dt, state=state)])
 
     compute_cfl = actx.compile(get_cfl)
 
@@ -627,19 +627,19 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     def vol_min_loc(x):
         from grudge.op import nodal_min_loc
-        return actx.to_numpy(nodal_min_loc(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_min_loc(dcoll, "vol", x))[()]
 
     def vol_max_loc(x):
         from grudge.op import nodal_max_loc
-        return actx.to_numpy(nodal_max_loc(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_max_loc(dcoll, "vol", x))[()]
 
     def vol_min(x):
         from grudge.op import nodal_min
-        return actx.to_numpy(nodal_min(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_min(dcoll, "vol", x))[()]
 
     def vol_max(x):
         from grudge.op import nodal_max
-        return actx.to_numpy(nodal_max(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_max(dcoll, "vol", x))[()]
 
     def my_write_viz(step, t, dt, cv, dv, ts_field):
         reaction_rates, = compute_production_rates(cv, dv.temperature)
@@ -655,7 +655,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         viz_fields.extend(
             ("Y_"+species_names[i], cv.species_mass_fractions[i])
             for i in range(nspecies))
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, temperature_seed):
@@ -678,31 +678,31 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         pressure = thaw(freeze(dv.pressure, actx), actx)
         temperature = thaw(freeze(dv.temperature, actx), actx)
 
-        if global_reduce(check_naninf_local(discr, "vol", pressure), op="lor"):
+        if global_reduce(check_naninf_local(dcoll, "vol", pressure), op="lor"):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if global_reduce(check_range_local(discr, "vol", pressure,
+        if global_reduce(check_range_local(dcoll, "vol", pressure,
                                            health_pres_min, health_pres_max),
                          op="lor"):
             health_error = True
             logger.info(f"{rank=}: Pressure range violation ({health_pres_min},"
                         f"{health_pres_max}).")
-            max_pressure = actx.to_numpy(discr.norm(dv.pressure, np.inf))[()]
+            max_pressure = actx.to_numpy(dcoll.norm(dv.pressure, np.inf))[()]
             logger.info(f"{rank=}: {max_pressure=}")
 
-        if global_reduce(check_naninf_local(discr, "vol", temperature), op="lor"):
+        if global_reduce(check_naninf_local(dcoll, "vol", temperature), op="lor"):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in temperature data.")
 
-        if global_reduce(check_range_local(discr, "vol", temperature,
+        if global_reduce(check_range_local(dcoll, "vol", temperature,
                                            health_temp_min, health_temp_max),
                          op="lor"):
             health_error = True
             logger.info(f"{rank=}: Temperature range violation.")
 
         for i in range(nspecies):
-            if global_reduce(check_range_local(discr, "vol",
+            if global_reduce(check_range_local(dcoll, "vol",
                                                cv.species_mass_fractions[i],
                                                health_mass_frac_min,
                                                health_mass_frac_max),
@@ -719,7 +719,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         from grudge import op
         temp_update, = compute_temperature_update(cv, temperature)
         temp_resid = thaw(freeze(temp_update, actx), actx) / temperature
-        temp_resid = (actx.to_numpy(op.nodal_max_loc(discr, "vol", temp_resid)))
+        temp_resid = (actx.to_numpy(op.nodal_max_loc(dcoll, "vol", temp_resid)))
         if temp_resid > 1e-8:
             health_error = True
             logger.info(f"{rank=}: Temperature is not converged {temp_resid=}.")
@@ -829,13 +829,13 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         fluid_state = make_fluid_state(cv=cv, gas_model=gas_model,
                                        temperature_seed=tseed)
         cv_rhs = (
-            ns_operator(discr, state=fluid_state, time=t, boundaries=boundaries,
+            ns_operator(dcoll, state=fluid_state, time=t, boundaries=boundaries,
                         gas_model=gas_model) +
             eos.get_species_source_terms(cv=cv, temperature=fluid_state.temperature)
         )
         return make_obj_array([cv_rhs, 0*tseed])
 
-    current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+    current_dt = get_sim_timestep(dcoll, current_state, current_t, current_dt,
                                   current_cfl, t_final, constant_cfl)
 
     if rank == 0:
