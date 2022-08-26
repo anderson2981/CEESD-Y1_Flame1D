@@ -90,7 +90,7 @@ from pytools.obj_array import make_obj_array
 
 from mirgecom.limiter import bound_preserving_limiter
 
-#######################################################################################
+##############################################################################
 
 class SingleLevelFilter(logging.Filter):
     def __init__(self, passlevel, reject):

@@ -115,7 +115,7 @@ class InterpolateCanteraFile:
         from meshmode.dof_array import DOFArray        
         import numpy as np
         from numpy import genfromtxt
-#        import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt
         from pytools.obj_array import make_obj_array
         from scipy.interpolate import CubicSpline
         
@@ -133,111 +133,131 @@ class InterpolateCanteraFile:
         data_y6 =  data_rho*0.0
         temp = data_rho*0.0
 
-        #data_ct = genfromtxt('adiabatic_flame_uiuc_sharp_C2H4+H2.csv',skip_header=1,delimiter=",")
-        data_ct = genfromtxt('adiabatic_flame_BFER_2S.csv',skip_header=1,delimiter=",")
+        data_ct = genfromtxt('adiabatic_flame_uiuc_sharp_C2H4+H2.csv',
+                             skip_header=1,delimiter=",")
+        #data_ct = genfromtxt('adiabatic_flame_BFER_2S.csv',
+        #                     skip_header=1,delimiter=",")
 
         #align flame with the boundaries of the domain refined region
         data_ct[:,0] = data_ct[:,0] - 0.0145 + 0.0025
 
-        cs = CubicSpline(data_ct[:,0], data_ct[:,3], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,3], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_rho[ii,ij] = cs(data_x[ii,ij])
          
-        data_ru[:,:] = 0.0
+        cs = CubicSpline(data_ct[:,0], data_ct[:,1], extrapolate=False)
+        for ii in range(0,data_x.shape[0]):
+          for ij in range(0,data_x.shape[1]):
+            data_ru[ii,ij] = cs(data_x[ii,ij])
+
         data_rv[:,:] = 0.0  
 
-        cs = CubicSpline(data_ct[:,0], data_ct[:,2], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,2], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             temp[ii,ij] = cs(data_x[ii,ij])
         
-#        plt.plot(data_ct[:,0], data_ct[:,2])
-#        plt.plot(data_x[:,0],temp[:,0])
+#        plt.plot(data_ct[:,0], data_ct[:,1])
+#        plt.plot(data_x[:,0],data_ru[:,0])
 #        plt.show()
 #            
 #        import sys
 #        sys.exit()
 
-        cs = CubicSpline(data_ct[:,0], data_ct[:,4], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,4], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y0[ii,ij] = cs(data_x[ii,ij])
 
-        cs = CubicSpline(data_ct[:,0], data_ct[:,5], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,5], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y1[ii,ij] = cs(data_x[ii,ij])
             
-        cs = CubicSpline(data_ct[:,0], data_ct[:,6], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,6], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y2[ii,ij] = cs(data_x[ii,ij])
             
-        cs = CubicSpline(data_ct[:,0], data_ct[:,7], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,7], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y3[ii,ij] = cs(data_x[ii,ij])
 
-        cs = CubicSpline(data_ct[:,0], data_ct[:,8], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,8], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y4[ii,ij] = cs(data_x[ii,ij])
             
-        cs = CubicSpline(data_ct[:,0], data_ct[:,9], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,9], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y5[ii,ij] = cs(data_x[ii,ij])
             
-        cs = CubicSpline(data_ct[:,0], data_ct[:,10], extrapolate=True)
+        cs = CubicSpline(data_ct[:,0], data_ct[:,10], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y6[ii,ij] = cs(data_x[ii,ij])
 
-        mass = DOFArray(actx, data=(actx.from_numpy(np.array(data_rho)), ))
-        mass = actx.np.where(actx.np.less(x,-0.01), data_ct[0,3], mass)
-        mass = actx.np.where(actx.np.greater(x,0.01), data_ct[-1,3], mass)
+        x_min = 0.012
+        x_max = 0.02
+
         u_x = DOFArray(actx, data=(actx.from_numpy(np.array(data_ru)), ))
+        u_x = actx.np.where(actx.np.less(x,-x_min), data_ct[0,1], u_x)
+        u_x = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,1], u_x)
+
         u_y = DOFArray(actx, data=(actx.from_numpy(np.array(data_rv)), ))
-        
-        y0 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y0)), ))
-        y0 = actx.np.where(actx.np.less(x,-0.01), data_ct[0, 4], y0)
-        y0 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1, 4], y0)
-        y1 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y1)), ))
-        y1 = actx.np.where(actx.np.less(x,-0.01), data_ct[0, 5], y1)
-        y1 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1, 5], y1)
-        y2 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y2)), ))
-        y2 = actx.np.where(actx.np.less(x,-0.01), data_ct[0, 6], y2)
-        y2 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1, 6], y2)
-        y3 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y3)), ))
-        y3 = actx.np.where(actx.np.less(x,-0.01), data_ct[0, 7], y3)
-        y3 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1, 7], y3)
-        y4 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y4)), ))
-        y4 = actx.np.where(actx.np.less(x,-0.01), data_ct[0, 8], y4)
-        y4 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1, 8], y4)
-        y5 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y5)), ))
-        y5 = actx.np.where(actx.np.less(x,-0.01), data_ct[0, 9], y5)
-        y5 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1, 9], y5)
-        y6 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y6)), )) 
-        y6 = actx.np.where(actx.np.less(x,-0.01), data_ct[0,10], y6) 
-        y6 = actx.np.where(actx.np.greater(x,0.01), data_ct[-1,10], y6) 
 
         temperature = DOFArray(actx, data=(actx.from_numpy(np.array(temp)), ))
-        temperature = actx.np.where(actx.np.less(x,-0.01), data_ct[0,2], temperature)
-        temperature = actx.np.where(actx.np.greater(x,0.01), data_ct[-1,2], temperature)
+        temperature = actx.np.where(actx.np.less(x,-x_min), data_ct[0,2], temperature)
+        temperature = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,2], temperature)
+
+        mass = DOFArray(actx, data=(actx.from_numpy(np.array(data_rho)), ))
+        mass = actx.np.where(actx.np.less(x,-x_min), data_ct[0,3], mass)
+        mass = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,3], mass)
         
-        y = make_obj_array([y0, y1, y2, y3, y4, y5, y6])
-        internal_energy = eos.get_internal_energy(temperature=temperature,
-                                                   species_mass_fractions=y)
-        energy = mass * (internal_energy)
+        y0 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y0)), ))
+        y0 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 4], y0)
+        y0 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1, 4], y0)
+        y1 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y1)), ))
+        y1 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 5], y1)
+        y1 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1, 5], y1)
+        y2 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y2)), ))
+        y2 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 6], y2)
+        y2 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1, 6], y2)
+        y3 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y3)), ))
+        y3 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 7], y3)
+        y3 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1, 7], y3)
+        y4 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y4)), ))
+        y4 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 8], y4)
+        y4 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1, 8], y4)
+        y5 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y5)), ))
+        y5 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 9], y5)
+        y5 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1, 9], y5)
+        y6 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y6)), )) 
+        y6 = actx.np.where(actx.np.less(x,-x_min), data_ct[0,10], y6) 
+        y6 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,10], y6) 
+        
+        velocity = make_obj_array([u_x, u_y])
+        species = make_obj_array([y0, y1, y2, y3, y4, y5, y6])
 
-        momentum = make_obj_array([u_x, u_y])
-
-        spec_lim = make_obj_array([
-            actx.np.where(actx.np.less(y[i], 1e-6), 0.0, y[i])
+        y = make_obj_array([
+            actx.np.where(actx.np.less(species[i], 1e-6), 0.0, species[i])
                    for i in range(7)])
 
-        specmass = mass*spec_lim
+        pressure = mass*0.0 + 101325.0
+        mass = eos.get_density(pressure, temperature,
+                               species_mass_fractions=y)
+
+        internal_energy = eos.get_internal_energy(temperature=temperature,
+                                                  species_mass_fractions=y)
+        kinetic_energy = 0.5*np.dot(velocity, velocity)
+        energy = mass * (internal_energy + kinetic_energy)
+
+        momentum = mass*velocity
+
+        specmass = mass*y
 
         return make_conserved(dim=self._dim, mass=mass, energy=energy,
                               momentum=momentum, species_mass=specmass)
@@ -309,7 +329,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
     
-    casename="flame_1D_25um_BFER_p=2_limited_C2H4"
+#    casename="flame_1D_25um_BFER_p=2_limited_C2H4"
+    casename="flame_1D_25um_sharp_p=2_limited_C2H4+H2"
 
     rst_path = "./"
     viz_path = "./"
@@ -345,7 +366,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # {{{  Set up initial state using Cantera
 
     # Use Cantera for initialization
-    mechanism_file = "BFER_2S"
+#    mechanism_file = "BFER_2S"
+    mechanism_file = "uiuc_sharp"
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -355,47 +377,47 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Initial temperature, pressure, and mixutre mole fractions are needed to
     # set up the initial state in Cantera.
     temp_unburned = 300.0
-    #temp_burned = 2393.5148209956023
-    temp_burned = 2411.330896246586
+#    temp_burned = 2393.5148209956023
+#    temp_burned = 2411.330896246586
     # Parameters for calculating the amounts of fuel, oxidizer, and inert species
-    if fuel == "C2H4":
-        stoich_ratio = 3.0
-    if fuel == "H2":
-        stoich_ratio = 0.5
-    equiv_ratio = 1.0
-    ox_di_ratio = 0.21
-    # Grab the array indices for the specific species, ethylene, oxygen, and nitrogen
-    i_fu = cantera_soln.species_index(fuel)
-    i_ox = cantera_soln.species_index("O2")
-    i_di = cantera_soln.species_index("N2")
-    x = np.zeros(nspecies)
-    # Set the species mole fractions according to our desired fuel/air mixture
-    x[i_fu] = (ox_di_ratio*equiv_ratio)/(stoich_ratio+ox_di_ratio*equiv_ratio)
-    x[i_ox] = stoich_ratio*x[i_fu]/equiv_ratio
-    x[i_di] = (1.0-ox_di_ratio)*x[i_ox]/ox_di_ratio
-    # Uncomment next line to make pylint fail when it can't find cantera.one_atm
-    one_atm = cantera.one_atm  # pylint: disable=no-member
-    # one_atm = 101325.0
-    pres_unburned = one_atm
+#    if fuel == "C2H4":
+#        stoich_ratio = 3.0
+#    if fuel == "H2":
+#        stoich_ratio = 0.5
+#    equiv_ratio = 1.0
+#    ox_di_ratio = 0.21
+#    # Grab the array indices for the specific species, ethylene, oxygen, and nitrogen
+#    i_fu = cantera_soln.species_index(fuel)
+#    i_ox = cantera_soln.species_index("O2")
+#    i_di = cantera_soln.species_index("N2")
+#    x = np.zeros(nspecies)
+#    # Set the species mole fractions according to our desired fuel/air mixture
+#    x[i_fu] = (ox_di_ratio*equiv_ratio)/(stoich_ratio+ox_di_ratio*equiv_ratio)
+#    x[i_ox] = stoich_ratio*x[i_fu]/equiv_ratio
+#    x[i_di] = (1.0-ox_di_ratio)*x[i_ox]/ox_di_ratio
+#    # Uncomment next line to make pylint fail when it can't find cantera.one_atm
+#    one_atm = cantera.one_atm  # pylint: disable=no-member
+#    # one_atm = 101325.0
+#    pres_unburned = one_atm
 
-    # Let the user know about how Cantera is being initilized
-    print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x}")
-    # Set Cantera internal gas temperature, pressure, and mole fractios
-    cantera_soln.TPX = temp_unburned, pres_unburned, x
-    # Pull temperature, total density, mass fractions, and pressure from Cantera
-    # We need total density, and mass fractions to initialize the fluid/gas state.
-    y_unburned = np.zeros(nspecies)
-    can_t, rho_unburned, y_unburned = cantera_soln.TDY
+#    # Let the user know about how Cantera is being initilized
+#    print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x}")
+#    # Set Cantera internal gas temperature, pressure, and mole fractios
+#    cantera_soln.TPX = temp_unburned, pres_unburned, x
+#    # Pull temperature, total density, mass fractions, and pressure from Cantera
+#    # We need total density, and mass fractions to initialize the fluid/gas state.
+#    y_unburned = np.zeros(nspecies)
+#    can_t, rho_unburned, y_unburned = cantera_soln.TDY
 
     # *can_t*, *can_p* should not differ (significantly) from user's initial data,
     # but we want to ensure that we use exactly the same starting point as Cantera,
     # so we use Cantera's version of these data.
 
     # now find the conditions for the burned gas
-    cantera_soln.TPX = temp_burned, pres_unburned, x    
-    cantera_soln.equilibrate("TP")
-    temp_burned, rho_burned, y_burned = cantera_soln.TDY
-    pres_burned = cantera_soln.P
+#    cantera_soln.TPX = temp_burned, pres_unburned, x    
+#    cantera_soln.equilibrate("TP")
+#    temp_burned, rho_burned, y_burned = cantera_soln.TDY
+#    pres_burned = cantera_soln.P
 
     from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
     pyrometheus_mechanism = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
@@ -404,12 +426,12 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     species_names = pyrometheus_mechanism.species_names
     gas_model = GasModel(eos=eos)
 
-    print(f"Pyrometheus mechanism species names {species_names}")
-    print(f"Unburned (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
-    print(f"Burned (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
+#    print(f"Pyrometheus mechanism species names {species_names}")
+#    print(f"Unburned (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
+#    print(f"Burned (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
 
-    vel_unburned = np.zeros(shape=(dim,))
-    vel_burned = np.zeros(shape=(dim,))
+#    vel_unburned = np.zeros(shape=(dim,))
+#    vel_burned = np.zeros(shape=(dim,))
     flow_init = InterpolateCanteraFile(dim=dim)
 
 ##########################################################################################3
@@ -444,7 +466,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 #####################################################################################
 
-    temperature_seed = can_t
+    temperature_seed = temp_unburned
 
     if restart_file is None:
         if rank == 0:
