@@ -39,7 +39,7 @@ from functools import partial
 
 from arraycontext import thaw, freeze
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
-from grudge.dof_desc import DTAG_BOUNDARY
+from grudge.dof_desc import BoundaryDomainTag
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
 
@@ -426,26 +426,26 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                         flow_pres=pres_unburned, flow_temp=temp_unburned,
                         flow_spec=y_unburned, **kwargs)
 
-    def _boundary_state_func(dcoll, btag, gas_model, state_minus, init_func,
+    def _boundary_state_func(dcoll, dd_bdry, gas_model, state_minus, init_func,
                              **kwargs):
         actx = state_minus.array_context
-        bnd_discr = dcoll.discr_from_dd(btag)
+        bnd_discr = dcoll.discr_from_dd(dd_bdry)
         nodes = thaw(bnd_discr.nodes(), actx)
         return make_fluid_state(init_func(nodes=nodes, eos=gas_model.eos,
                                           cv=state_minus.cv, **kwargs),
                                 gas_model=gas_model,
                                 temperature_seed=state_minus.temperature)
 
-    def _inflow_boundary_state(dcoll, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(dcoll, btag, gas_model, state_minus,
+    def _inflow_boundary_state(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, dd_bdry, gas_model, state_minus,
                                     _inflow_func, **kwargs)
 
-    def _outflow_boundary_state(dcoll, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(dcoll, btag, gas_model, state_minus,
+    def _outflow_boundary_state(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, dd_bdry, gas_model, state_minus,
                                     _outflow_func, **kwargs)
 
-    def _symmetry_boundary_state(dcoll, btag, gas_model, state_minus, **kwargs):
-        return _boundary_state_func(dcoll, btag, gas_model, state_minus,
+    def _symmetry_boundary_state(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+        return _boundary_state_func(dcoll, dd_bdry, gas_model, state_minus,
                                     _symmetry_func, **kwargs)
 
     wall_symmetry = \
@@ -455,9 +455,9 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     outflow_boundary = \
         PrescribedFluidBoundary(boundary_state_func=_outflow_boundary_state)
 
-    boundaries = {DTAG_BOUNDARY("Inflow"): inflow_boundary,
-                  DTAG_BOUNDARY("Outflow"): outflow_boundary,
-                  DTAG_BOUNDARY("Wall"): wall_symmetry}
+    boundaries = {BoundaryDomainTag("Inflow"): inflow_boundary,
+                  BoundaryDomainTag("Outflow"): outflow_boundary,
+                  BoundaryDomainTag("Wall"): wall_symmetry}
 
     restart_step = None
     if restart_file is None:
