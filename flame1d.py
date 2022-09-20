@@ -51,7 +51,6 @@ from mirgecom.simutil import (
     write_visfile,
     check_naninf_local,
     check_range_local,
-    global_reduce
 )
 from mirgecom.restart import (
     write_restart_file
@@ -254,7 +253,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
 
     # param sanity check
     allowed_integrators = ["rk4", "euler", "lsrk54", "lsrk144"]
-    if(integrator not in allowed_integrators):
+    if integrator not in allowed_integrators:
         error_message = "Invalid time integrator: {}".format(integrator)
         raise RuntimeError(error_message)
 
@@ -267,7 +266,7 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
         timestepper = lsrk144_step
 
     allowed_fuels = ["H2", "C2H4"]
-    if(fuel not in allowed_fuels):
+    if fuel not in allowed_fuels:
         error_message = "Invalid fuel selection: {}".format(fuel)
         raise RuntimeError(error_message)
 
@@ -902,7 +901,7 @@ if __name__ == "__main__":
 
     # for writing output
     casename = "flame1d"
-    if(args.casename):
+    if args.casename:
         print(f"Custom casename {args.casename}")
         casename = (args.casename).replace("'", "")
     else:
@@ -914,7 +913,7 @@ if __name__ == "__main__":
         print(f"Restarting from file: {restart_file}")
 
     input_file = None
-    if(args.input_file):
+    if args.input_file:
         input_file = (args.input_file).replace("'", "")
         print(f"Reading user input from {args.input_file}")
     else:
