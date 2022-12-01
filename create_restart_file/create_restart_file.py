@@ -39,7 +39,7 @@ from functools import partial
 
 from arraycontext import thaw, freeze
 
-from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+#from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -63,20 +63,19 @@ from mirgecom.mpi import mpi_entry_point
 import pyopencl.tools as cl_tools
 # from mirgecom.checkstate import compare_states
 from mirgecom.integrators import (
-    rk4_step,
-    lsrk54_step,
-    lsrk144_step,
+#    rk4_step,
+#    lsrk54_step,
+#    lsrk144_step,
     euler_step
 )
 from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     SymmetryBoundary,
-    AdiabaticSlipBoundary,
     PrescribedFluidBoundary
 )
 from mirgecom.fluid import make_conserved, species_mass_fraction_gradient
-from mirgecom.transport import SimpleTransport, PowerLawTransport
-from mirgecom.viscous import get_viscous_timestep, get_viscous_cfl, diffusive_flux
+#from mirgecom.transport import SimpleTransport, PowerLawTransport
+#from mirgecom.viscous import get_viscous_timestep, get_viscous_cfl, diffusive_flux
 from mirgecom.eos import PyrometheusMixture
 from mirgecom.gas_model import GasModel, make_fluid_state
 import cantera
@@ -89,9 +88,7 @@ from mirgecom.logging_quantities import (
 )
 from pytools.obj_array import make_obj_array
 
-from mirgecom.limiter import (
-    bound_preserving_limiter
-)
+from mirgecom.limiter import bound_preserving_limiter
 
 #######################################################################################
 
@@ -115,7 +112,7 @@ class InterpolateCanteraFile:
         from meshmode.dof_array import DOFArray        
         import numpy as np
         from numpy import genfromtxt
-        import matplotlib.pyplot as plt
+#        import matplotlib.pyplot as plt
         from pytools.obj_array import make_obj_array
         from scipy.interpolate import CubicSpline
         
@@ -131,15 +128,16 @@ class InterpolateCanteraFile:
         data_y4 =  data_rho*0.0
         data_y5 =  data_rho*0.0
         data_y6 =  data_rho*0.0
+        data_y7 =  data_rho*0.0
+        data_y8 =  data_rho*0.0
+        pres = data_rho*0.0
         temp = data_rho*0.0
 
-        data_ct = genfromtxt('adiabatic_flame_uiuc_sharp_C2H4+H2.csv',
+        data_ct = genfromtxt('adiabatic_flame_sandiego.csv',
                              skip_header=1,delimiter=",")
-        #data_ct = genfromtxt('adiabatic_flame_BFER_2S.csv',
-        #                     skip_header=1,delimiter=",")
 
         #align flame with the boundaries of the domain refined region
-        data_ct[:,0] = data_ct[:,0] - 0.0145 + 0.0025
+        data_ct[:,0] = data_ct[:,0] - 0.028 + 0.0025
 
         cs = CubicSpline(data_ct[:,0], data_ct[:,3], extrapolate=False)
         for ii in range(0,data_x.shape[0]):
@@ -199,9 +197,36 @@ class InterpolateCanteraFile:
         for ii in range(0,data_x.shape[0]):
           for ij in range(0,data_x.shape[1]):
             data_y6[ii,ij] = cs(data_x[ii,ij])
+            
+        cs = CubicSpline(data_ct[:,0], data_ct[:,11], extrapolate=False)
+        for ii in range(0,data_x.shape[0]):
+          for ij in range(0,data_x.shape[1]):
+            data_y7[ii,ij] = cs(data_x[ii,ij])
+            
+        cs = CubicSpline(data_ct[:,0], data_ct[:,12], extrapolate=False)
+        for ii in range(0,data_x.shape[0]):
+          for ij in range(0,data_x.shape[1]):
+            data_y8[ii,ij] = cs(data_x[ii,ij])
 
-        x_min = 0.012
-        x_max = 0.02
+
+#        cte = 101325 + data_ct[-1,3]*data_ct[-1,1]**2
+#        unbd_pres = cte - data_ct[0,3]*data_ct[0,1]**2
+#        burn_pres = 101325.0
+#        print(unbd_pres, burn_pres)
+#        pres_aux = cte - data_ct[:,3]*data_ct[:,1]**2
+#        cs = CubicSpline(data_ct[:,0], pres_aux, extrapolate=False)
+#        for ii in range(0,data_x.shape[0]):
+#          for ij in range(0,data_x.shape[1]):
+#            pres[ii,ij] = cs(data_x[ii,ij])
+
+#        plt.plot(data_ct[:,0], pres_aux)
+#        plt.show()
+#            
+#        import sys
+#        sys.exit()
+
+        x_min = 0.00# - 0.028 + 0.0025
+        x_max = 0.08 - 0.028 + 0.0025
 
         u_x = DOFArray(actx, data=(actx.from_numpy(np.array(data_ru)), ))
         u_x = actx.np.where(actx.np.less(x,-x_min), data_ct[0,1], u_x)
@@ -216,6 +241,10 @@ class InterpolateCanteraFile:
         mass = DOFArray(actx, data=(actx.from_numpy(np.array(data_rho)), ))
         mass = actx.np.where(actx.np.less(x,-x_min), data_ct[0,3], mass)
         mass = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,3], mass)
+
+#        pressure = DOFArray(actx, data=(actx.from_numpy(np.array(pres)), ))
+#        pressure = actx.np.where(actx.np.less(x,-x_min), unbd_pres, pressure)
+#        pressure = actx.np.where(actx.np.less(x,x_max), pressure, burn_pres)
         
         y0 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y0)), ))
         y0 = actx.np.where(actx.np.less(x,-x_min), data_ct[0, 4], y0)
@@ -238,17 +267,24 @@ class InterpolateCanteraFile:
         y6 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y6)), )) 
         y6 = actx.np.where(actx.np.less(x,-x_min), data_ct[0,10], y6) 
         y6 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,10], y6) 
+        y7 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y7)), ))
+        y7 = actx.np.where(actx.np.less(x,-x_min), data_ct[0,11], y7)
+        y7 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,11], y7)
+        y8 = DOFArray(actx, data=(actx.from_numpy(np.array(data_y8)), )) 
+        y8 = actx.np.where(actx.np.less(x,-x_min), data_ct[0,12], y8) 
+        y8 = actx.np.where(actx.np.greater(x,x_max), data_ct[-1,12], y8) 
         
         velocity = make_obj_array([u_x, u_y])
-        species = make_obj_array([y0, y1, y2, y3, y4, y5, y6])
+        species = make_obj_array([y0, y1, y2, y3, y4, y5, y6, y7, y8])
 
         y = make_obj_array([
             actx.np.where(actx.np.less(species[i], 1e-6), 0.0, species[i])
-                   for i in range(7)])
+                   for i in range(9)])
 
-        pressure = mass*0.0 + 101325.0
-        mass = eos.get_density(pressure, temperature,
-                               species_mass_fractions=y)
+        #pressure = mass*0.0 + 101325.0
+
+#        mass = eos.get_density(pressure, temperature,
+#                               species_mass_fractions=y)
 
         internal_energy = eos.get_internal_energy(temperature=temperature,
                                                   species_mass_fractions=y)
@@ -306,7 +342,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     nparts = comm.Get_size()
 
     from mirgecom.simutil import global_reduce as _global_reduce
-#    global_reduce = partial(_global_reduce, comm=comm)
 
     logmgr = initialize_logmgr(use_logmgr, filename=(f"{casename}.sqlite"),
                                mode="wo", mpi_comm=comm)
@@ -329,8 +364,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # ~~~~~~~~~~~~~~~~~~
     
-#    casename="flame_1D_25um_BFER_p=2_limited_C2H4"
-    casename="flame_1D_25um_sharp_p=2_limited_C2H4+H2"
+    casename="flame_1D_25um_sandiego_p=2"
 
     rst_path = "./"
     viz_path = "./"
@@ -367,7 +401,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     # Use Cantera for initialization
 #    mechanism_file = "BFER_2S"
-    mechanism_file = "uiuc_sharp"
+    mechanism_file = "sandiego"
     from mirgecom.mechanisms import get_mechanism_input
     mech_input = get_mechanism_input(mechanism_file)
 
@@ -377,47 +411,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     # Initial temperature, pressure, and mixutre mole fractions are needed to
     # set up the initial state in Cantera.
     temp_unburned = 300.0
-#    temp_burned = 2393.5148209956023
-#    temp_burned = 2411.330896246586
-    # Parameters for calculating the amounts of fuel, oxidizer, and inert species
-#    if fuel == "C2H4":
-#        stoich_ratio = 3.0
-#    if fuel == "H2":
-#        stoich_ratio = 0.5
-#    equiv_ratio = 1.0
-#    ox_di_ratio = 0.21
-#    # Grab the array indices for the specific species, ethylene, oxygen, and nitrogen
-#    i_fu = cantera_soln.species_index(fuel)
-#    i_ox = cantera_soln.species_index("O2")
-#    i_di = cantera_soln.species_index("N2")
-#    x = np.zeros(nspecies)
-#    # Set the species mole fractions according to our desired fuel/air mixture
-#    x[i_fu] = (ox_di_ratio*equiv_ratio)/(stoich_ratio+ox_di_ratio*equiv_ratio)
-#    x[i_ox] = stoich_ratio*x[i_fu]/equiv_ratio
-#    x[i_di] = (1.0-ox_di_ratio)*x[i_ox]/ox_di_ratio
-#    # Uncomment next line to make pylint fail when it can't find cantera.one_atm
-#    one_atm = cantera.one_atm  # pylint: disable=no-member
-#    # one_atm = 101325.0
-#    pres_unburned = one_atm
-
-#    # Let the user know about how Cantera is being initilized
-#    print(f"Input state (T,P,X) = ({temp_unburned}, {pres_unburned}, {x}")
-#    # Set Cantera internal gas temperature, pressure, and mole fractios
-#    cantera_soln.TPX = temp_unburned, pres_unburned, x
-#    # Pull temperature, total density, mass fractions, and pressure from Cantera
-#    # We need total density, and mass fractions to initialize the fluid/gas state.
-#    y_unburned = np.zeros(nspecies)
-#    can_t, rho_unburned, y_unburned = cantera_soln.TDY
-
-    # *can_t*, *can_p* should not differ (significantly) from user's initial data,
-    # but we want to ensure that we use exactly the same starting point as Cantera,
-    # so we use Cantera's version of these data.
-
-    # now find the conditions for the burned gas
-#    cantera_soln.TPX = temp_burned, pres_unburned, x    
-#    cantera_soln.equilibrate("TP")
-#    temp_burned, rho_burned, y_burned = cantera_soln.TDY
-#    pres_burned = cantera_soln.P
 
     from mirgecom.thermochemistry import make_pyrometheus_mechanism_class
     pyrometheus_mechanism = make_pyrometheus_mechanism_class(cantera_soln)(actx.np)
@@ -426,12 +419,6 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     species_names = pyrometheus_mechanism.species_names
     gas_model = GasModel(eos=eos)
 
-#    print(f"Pyrometheus mechanism species names {species_names}")
-#    print(f"Unburned (T,P,Y) = ({temp_unburned}, {pres_unburned}, {y_unburned}")
-#    print(f"Burned (T,P,Y) = ({temp_burned}, {pres_burned}, {y_burned}")
-
-#    vel_unburned = np.zeros(shape=(dim,))
-#    vel_burned = np.zeros(shape=(dim,))
     flow_init = InterpolateCanteraFile(dim=dim)
 
 ##########################################################################################3
@@ -458,9 +445,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from grudge.dof_desc import DISCR_TAG_QUAD
     from mirgecom.discretization import create_discretization_collection
-    discr = create_discretization_collection(actx, local_mesh, order,
+    dcoll = create_discretization_collection(actx, local_mesh, order,
                                              mpi_communicator=comm)
-    nodes = actx.thaw(discr.nodes())
+    nodes = actx.thaw(dcoll.nodes())
     
     quadrature_tag = None
 
@@ -504,7 +491,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         vis_timer = IntervalTimer("t_vis", "Time spent visualizing")
         logmgr.add_quantity(vis_timer)
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     initname = "flame1d"
     eosname = eos.__class__.__name__
@@ -543,7 +530,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                                 for i in range(nspecies))
 
         print('Writing solution file...')
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
                       
         return
@@ -592,7 +579,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     def limit_species_source(cv, pressure, temperature, 
                              species_enthalpies=None):
         spec_lim = make_obj_array([
-            bound_preserving_limiter(discr, cv.species_mass_fractions[i],
+            bound_preserving_limiter(dcoll, cv.species_mass_fractions[i],
                                      mmin=0.0, mmax=1.0, modify_average=True)
             for i in range(nspecies)
         ])

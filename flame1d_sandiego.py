@@ -39,7 +39,7 @@ from functools import partial
 
 from arraycontext import thaw, freeze
 
-from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
+#from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from grudge.dof_desc import DTAG_BOUNDARY
 from grudge.eager import EagerDGDiscretization
 from grudge.shortcuts import make_visualizer
@@ -68,14 +68,11 @@ from mirgecom.steppers import advance_state
 from mirgecom.boundary import (
     PrescribedFluidBoundary,
     OutflowBoundary,
-    SymmetryBoundary,
-    DummyBoundary
 )
 from mirgecom.fluid import make_conserved, species_mass_fraction_gradient
 from mirgecom.transport import (
     ArtificialViscosityTransport,
     PowerLawTransport,
-    MixtureAveragedTransport
 )
 from mirgecom.viscous import get_viscous_timestep, get_viscous_cfl
 from mirgecom.eos import PyrometheusMixture
@@ -89,8 +86,6 @@ from mirgecom.logging_quantities import (
     set_sim_state
 )
 from pytools.obj_array import make_obj_array
-
-#from mirgecom.limiter import bound_preserving_limiter
 
 #######################################################################################
 
@@ -336,8 +331,40 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     species_names = pyrometheus_mechanism.species_names
 
     # }}}    
+
+    from mirgecom.transport import TransportModel
+    from meshmode.dof_array import DOFArray
+    class MixtureAveragedTransport(TransportModel):
+    
+        def __init__(self, pyrometheus_mech, alpha=0.6, factor=1.0, diff_switch=1.0e-7):
+            self._pyro_mech = pyrometheus_mech
+            self._alpha = alpha
+            self._factor = factor
+            self._diff_switch = diff_switch
+    
+        def viscosity(self, cv, dv, eos = None):
+            return self._factor*self._pyro_mech.get_mixture_viscosity_mixavg(
+                    dv.temperature, cv.species_mass_fractions)
+    
+        def bulk_viscosity(self, cv, dv, eos = None):
+            return self._alpha*self.viscosity(cv, dv)
+    
+        def volume_viscosity(self, cv, dv, eos = None):
+            return (self._alpha - 2.0/3.0)*self.viscosity(cv, dv)
+    
+        def thermal_conductivity(self, cv, dv, eos = None):
+            return self._factor*(self._pyro_mech.get_mixture_thermal_conductivity_mixavg(
+                dv.temperature, cv.species_mass_fractions,))
+    
+        def species_diffusivity(self, cv, dv, eos = None):
+            return self._factor*(
+                self._pyro_mech.get_species_mass_diffusivities_mixavg(
+                    dv.temperature, dv.pressure, cv.species_mass_fractions,
+                    self._diff_switch)
+            )
     
     # {{{ Initialize transport model
+
     #physical_transport = MixtureAveragedTransport(pyrometheus_mechanism)
     physical_transport = PowerLawTransport(lewis=np.ones(nspecies))
     if use_AV == False:
@@ -346,10 +373,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         kappa_av = 0.0
         av_species = 0.0
 
-    def smoothness_indicator(discr, field, **kwargs):
+    def smoothness_indicator(dcoll, field, **kwargs):
         
         actx = field.array_context
-        nodes = force_evaluation(actx, discr.nodes())
+        nodes = force_evaluation(actx, dcoll.nodes())
         xpos = nodes[0]
         ypos = nodes[1]
 
@@ -357,12 +384,10 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
         return smoothness
 
-    transport_model = \
-        ArtificialViscosityTransport(physical_transport=physical_transport,
-                                     nspecies=9,
-                                     av_mu=alpha, av_prandtl=0.71,
-                                     av_species_diffusivity=av_species)
-    # }}}
+    transport_model = ArtificialViscosityTransport(
+        physical_transport=physical_transport, #nspecies=9,
+        av_mu=alpha, av_prandtl=0.71, av_species_diffusivity=av_species)
+
     # }}}    
     
     gas_model = GasModel(eos=eos, transport=transport_model)
@@ -448,9 +473,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from grudge.dof_desc import DISCR_TAG_QUAD
     from mirgecom.discretization import create_discretization_collection
-    discr = create_discretization_collection(actx, local_mesh, order,
+    dcoll = create_discretization_collection(actx, local_mesh, order,
                                              mpi_communicator=comm)
-    nodes = actx.thaw(discr.nodes())
+    nodes = actx.thaw(dcoll.nodes())
 
     from grudge.dof_desc import DISCR_TAG_BASE, DISCR_TAG_QUAD
     if use_overintegration:
@@ -460,14 +485,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def vol_min(x):
         from grudge.op import nodal_min
-        return actx.to_numpy(nodal_min(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_min(dcoll, "vol", x))[()]
 
     def vol_max(x):
         from grudge.op import nodal_max
-        return actx.to_numpy(nodal_max(discr, "vol", x))[()]
+        return actx.to_numpy(nodal_max(dcoll, "vol", x))[()]
 
     from grudge.dt_utils import characteristic_lengthscales
-    length_scales = characteristic_lengthscales(actx, discr)
+    length_scales = characteristic_lengthscales(actx, dcoll)
     h_min = vol_min(length_scales)
     h_max = vol_max(length_scales)
 
@@ -503,7 +528,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     if True: #use_AV:
         smoothness = force_evaluation(actx, 0.0*smoothness_indicator(
-            discr, current_cv.mass, kappa=kappa_av, s0=s0))
+            dcoll, current_cv.mass, kappa=kappa_av, s0=s0))
 
 ##############################################################################
 
@@ -601,9 +626,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
     from mirgecom.fluid import make_conserved
     from pytools.obj_array import make_obj_array
-    def _outflow_bnd(discr, btag, state_minus, nodes, eos):
+    def _outflow_bnd(dcoll, dd_bdry, state_minus, nodes, eos):
 
-        nhat = actx.thaw(discr.normal(btag))
+        nhat = actx.thaw(dcoll.normal(dd_bdry))
 
         rhoref = mass_burned
         u_ref = vel_burned
@@ -654,9 +679,9 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                               momentum=mom, species_mass=specmass)
 
 
-    def _inflow_bnd(discr, btag, state_minus, nodes, eos):
+    def _inflow_bnd(dcoll, dd_bdry, state_minus, nodes, eos):
 
-        nhat = -actx.thaw(discr.normal(btag))
+        nhat = -actx.thaw(dcoll.normal(dd_bdry))
 
         rhoref = mass_unburned
         u_ref = vel_unburned
@@ -704,25 +729,25 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
                               momentum=mom, species_mass=specmass)
 
 
-    def _inflow_bnd_state_func(discr, btag, gas_model, state_minus, **kwargs):
-        inflow_bnd_discr = discr.discr_from_dd(btag)
+    def _inflow_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+        inflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
         inflow_nodes = actx.thaw(inflow_bnd_discr.nodes())
         bnd_smoothness = inflow_nodes[0]*0.0
-        inflow_bnd_cond = _inflow_bnd(discr, btag, state_minus, nodes, eos)
+        inflow_bnd_cond = _inflow_bnd(dcoll, dd_bdry, state_minus, nodes, eos)
         return make_fluid_state(cv=inflow_bnd_cond, gas_model=gas_model,
                                 temperature_seed=300.0,
                                 smoothness=bnd_smoothness)
 
-    def _outflow_bnd_state_func(discr, btag, gas_model, state_minus, **kwargs):
-        outflow_bnd_discr = discr.discr_from_dd(btag)
+    def _outflow_bnd_state_func(dcoll, dd_bdry, gas_model, state_minus, **kwargs):
+        outflow_bnd_discr = dcoll.discr_from_dd(dd_bdry)
         outflow_nodes = actx.thaw(outflow_bnd_discr.nodes())
         bnd_smoothness = outflow_nodes[0]*0.0
-        outflow_bnd_cond = _outflow_bnd(discr, btag, state_minus, nodes, eos)
+        outflow_bnd_cond = _outflow_bnd(dcoll, dd_bdry, state_minus, nodes, eos)
         return make_fluid_state(cv=outflow_bnd_cond, gas_model=gas_model,
                                 temperature_seed=temp_burned,
                                 smoothness=bnd_smoothness)
 
-    outflow_bnd = \ 
+    outflow_bnd = \
         PrescribedFluidBoundary(boundary_state_func=_outflow_bnd_state_func)
     inflow_bnd = \
         PrescribedFluidBoundary(boundary_state_func=_inflow_bnd_state_func)
@@ -733,14 +758,14 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ####################################################################################
 
-    visualizer = make_visualizer(discr)
+    visualizer = make_visualizer(dcoll)
 
     initname = "flame1D"
     eosname = eos.__class__.__name__
     init_message = make_init_message(dim=dim, order=order,
                                      nelements=local_nelements,
                                      global_nelements=global_nelements,
-                                     t=current_t,
+                                     t_initial=current_t,
                                      dt=current_dt, t_final=t_final,
                                      nstatus=nstatus, nviz=nviz,
                                      cfl=current_cfl,
@@ -758,7 +783,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         return make_obj_array([eos.get_production_rates(cv, temperature)])
     compute_production_rates = actx.compile(get_production_rates)
 
-    def my_write_viz(step, t, state):
+    def my_write_viz(step, t, state, grad_cv, grad_t):
 
         gamma = eos.gamma(state.cv, state.dv.temperature)
 
@@ -782,6 +807,17 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                      ("reaction_rates", reaction_rates),
                       ("sponge", sponge_sigma),
                       ]
+
+        grad_v = velocity_gradient(state.cv, grad_cv)
+
+        viz_fields.extend([
+            ("grad_T", grad_t),
+            ("grad_rho", grad_cv.mass),
+            ("grad_rhoU", grad_cv.momentum[0]),
+            ("grad_rhoV", grad_cv.momentum[1]),
+            ("grad_U", grad_v[0]),
+            ("grad_V", grad_v[1]),
+            ])
                       
         # species mass fractions
         viz_fields.extend(
@@ -802,7 +838,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                ])  
 
         print('Writing solution file...')
-        write_visfile(discr, viz_fields, visualizer, vizname=vizname,
+        write_visfile(dcoll, viz_fields, visualizer, vizname=vizname,
                       step=step, t=t, overwrite=True)
 
     def my_write_restart(step, t, cv, tseed):
@@ -828,11 +864,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         pressure = force_evaluation(actx, dv.pressure)
         temperature = force_evaluation(actx, dv.temperature)
 
-        if global_reduce(check_naninf_local(discr, "vol", pressure), op="lor"):
+        if global_reduce(check_naninf_local(dcoll, "vol", pressure), op="lor"):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in pressure data.")
 
-        if global_reduce(check_naninf_local(discr, "vol", temperature), op="lor"):
+        if global_reduce(check_naninf_local(dcoll, "vol", temperature), op="lor"):
             health_error = True
             logger.info(f"{rank=}: NANs/Infs in temperature data.")
 
@@ -840,6 +876,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
 ###############################################################################
 
+#    from mirgecom.limiter import bound_preserving_limiter
 #    def limit_species_source(cv, pressure, temperature, 
 #                             species_enthalpies=None):
 #        spec_lim = make_obj_array([
@@ -897,11 +934,11 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
         fluid_state = get_fluid_state(cv, tseed, smoothness=smoothness)
 
         if constant_cfl:
-            dt = get_sim_timestep(discr, fluid_state, t, dt, current_cfl,
+            dt = get_sim_timestep(dcoll, fluid_state, t, dt, current_cfl,
                                            t_final, constant_cfl, local_dt)     
         if local_dt:
             t = force_evaluation(actx, t)
-            dt = force_evaluation(actx, get_sim_timestep(discr, fluid_state,
+            dt = force_evaluation(actx, get_sim_timestep(dcoll, fluid_state,
                  cfl=current_cfl, constant_cfl=constant_cfl, local_dt=local_dt))
              
         try:
@@ -921,12 +958,13 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 
             if do_viz:            
                 ns_rhs, grad_cv, grad_t = \
-                    ns_operator(discr, state=fluid_state, time=t,
+                    ns_operator(dcoll, state=fluid_state, time=t,
                                 boundaries=boundaries, gas_model=gas_model,
                                 return_gradients=True,
                                 quadrature_tag=quadrature_tag)
                 
-                my_write_viz(step=step, t=t, state=fluid_state)
+                my_write_viz(step=step, t=t, state=fluid_state,
+                    grad_cv=grad_cv, grad_t=grad_t)
 
         except MyRuntimeError:
             if rank == 0:
@@ -956,7 +994,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
 #                                       smoothness=smoothness)
 
         ns_rhs, grad_cv, grad_t = (
-            ns_operator(discr, state=fluid_state,
+            ns_operator(dcoll, state=fluid_state,
                         time=t, boundaries=boundaries,
                         gas_model=gas_model,
                         return_gradients=True,
@@ -992,7 +1030,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     current_state = get_fluid_state(current_cv, tseed, smoothness=smoothness)
     current_state = force_evaluation(actx, current_state)
 
-    current_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
+    current_dt = get_sim_timestep(dcoll, current_state, current_t, current_dt,
                                   current_cfl, t_final, constant_cfl)
 
     if rank == 0:
