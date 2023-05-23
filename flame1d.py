@@ -77,7 +77,7 @@ import cantera
 from logpyle import IntervalTimer, set_dt
 from mirgecom.logging_quantities import (
     initialize_logmgr,
-    logmgr_add_cl_device_info, logmgr_set_time, LogUserQuantity,
+    logmgr_add_cl_device_info, logmgr_set_time,
     set_sim_state
 )
 
@@ -299,14 +299,13 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     # --- Note: Users may add their own CTI file by dropping it into
     # ---       mirgecom/mechanisms alongside the other CTI files.
 
-    from mirgecom.mechanisms import get_mechanism_cti
+    from mirgecom.mechanisms import get_mechanism_input
     if fuel == "C2H4":
-        mech_cti = get_mechanism_cti("uiuc")
+        mech_input = get_mechanism_input('uiuc')
     elif fuel == "H2":
-        mech_cti = get_mechanism_cti("sanDiego")
-        # mech_cti = get_mechanism_cti("sanDiego_trans")
+        mech_input = get_mechanism_input("sanDiego")
 
-    cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
+    cantera_soln = cantera.Solution(name="gas", yaml=mech_input)
     nspecies = cantera_soln.n_species
 
     # Initial temperature, pressure, and mixutre mole fractions are needed to
@@ -549,12 +548,10 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
     temperature_seed = current_state.temperature
 
     vis_timer = None
-    log_cfl = LogUserQuantity(name="cfl", value=current_cfl)
 
     if logmgr:
         logmgr_add_cl_device_info(logmgr, queue)
         logmgr_set_time(logmgr, current_step, current_t)
-        #logmgr_add_package_versions(logmgr)
 
         logmgr.add_watches([
             ("step.max", "step = {value}, "),
@@ -782,7 +779,6 @@ def main(ctx_factory=cl.create_some_context, casename="flame1d",
                 logmgr.tick_before()
 
             ts_field, cfl, dt = my_get_timestep(t, dt, fluid_state)
-            log_cfl.set_quantity(cfl)
 
             do_viz = check_step(step=step, interval=nviz)
             do_restart = check_step(step=step, interval=nrestart)
